@@ -1,4 +1,4 @@
-﻿# Project Status / 项目状态
+# Project Status / 项目状态
 
 Last updated / 更新时间：2026-05-02
 
@@ -9,6 +9,7 @@ Last updated / 更新时间：2026-05-02
 - Android：`versionCode 5` / `versionName 1.0.3`
 - Backend：`0.1.0`
 - Minecraft Plugin：`0.1.0`
+- License：Apache License 2.0
 
 ### 已实现
 
@@ -46,6 +47,7 @@ Last updated / 更新时间：2026-05-02
 - Android: `versionCode 5` / `versionName 1.0.3`
 - Backend: `0.1.0`
 - Minecraft Plugin: `0.1.0`
+- License: Apache License 2.0
 
 ### Implemented
 
@@ -75,4 +77,3 @@ Last updated / 更新时间：2026-05-02
 - Split `MainActivity.kt` by screen to reduce UI maintenance cost.
 - Split `AppRepositories.kt` into deeper account, wallet, and chat module interfaces over time.
 - Add more complete end-to-end integration scripts and device acceptance records.
-

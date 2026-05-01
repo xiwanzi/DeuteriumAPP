@@ -1,4 +1,4 @@
-﻿# DeuteriumAPP
+# DeuteriumAPP
 
 > Native Android companion app, backend API, and Minecraft plugin bridge for a server community.
 
@@ -68,7 +68,7 @@ cd minecraft-plugin
 
 ### License
 
-开源许可证尚未在公开发布前最终确认。正式发布前请补充 `LICENSE` 文件。
+本项目使用 [Apache License 2.0](LICENSE) 开源。你可以使用、修改、分发和商用本项目代码，但需要遵守许可证中的版权声明、专利授权和免责声明要求。
 
 ## English
 
@@ -136,5 +136,4 @@ The script creates a clean copy and excludes local tools, build artifacts, deliv
 
 ### License
 
-The open-source license has not been finalized yet. Add a `LICENSE` file before the first official public release.
-
+This project is licensed under the [Apache License 2.0](LICENSE). You may use, modify, distribute, and commercially use the code under the copyright notice, patent grant, and disclaimer terms of the license.

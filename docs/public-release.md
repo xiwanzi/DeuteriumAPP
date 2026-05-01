@@ -1,4 +1,4 @@
-﻿# Public Release Checklist / 公开发布检查清单
+# Public Release Checklist / 公开发布检查清单
 
 Last updated / 更新时间：2026-05-02
 
@@ -12,6 +12,7 @@ Last updated / 更新时间：2026-05-02
 - 公开仓库不应包含生产数据库密码、pepper、plugin bridge token、私有域名、APK、JAR、ZIP、JRE、本地 SDK 或真实 `application.conf`。
 - 产品 README 应面向使用者和贡献者，而不是内部交付人员。
 - 私有工作区可以保留生产交付文档，但公开导出必须排除或清洗这些内容。
+- 当前公开许可证为 Apache License 2.0，公开仓库必须包含根目录 `LICENSE` 文件。
 
 ### 生成公开副本
 
@@ -52,7 +53,7 @@ Get-ChildItem C:\DeuteriumAPP-public -Recurse -File |
 - 快速开始是否能让外部开发者理解如何构建。
 - 技术架构是否解释清楚三端关系。
 - 没有真实服务器地址、真实账号、真实 token 或交付包。
-- 已选择并添加开源许可证。
+- 已包含 Apache License 2.0 的根目录 `LICENSE` 文件。
 
 ### 推送公开仓库
 
@@ -80,6 +81,7 @@ This checklist is for maintainers. The goal is to publish DeuteriumAPP as an ope
 - The public repository should not contain production database passwords, peppers, plugin bridge tokens, private domains, APKs, JARs, ZIPs, JRE files, local SDK tools, or filled `application.conf` files.
 - The product README should speak to users and contributors, not internal delivery operators.
 - The private workspace may keep production delivery docs, but public export must exclude or sanitize them.
+- The current public license is Apache License 2.0. The public repository must include the root `LICENSE` file.
 
 ### Generate Public Copy
 
@@ -120,7 +122,7 @@ Also confirm:
 - Getting started docs are understandable for external developers.
 - Technical architecture explains the three-runtime-module relationship clearly.
 - No real server address, account, token, or delivery artifact is present.
-- An open-source license has been selected and added.
+- The root `LICENSE` file for Apache License 2.0 is present.
 
 ### Push Public Repository
 
@@ -137,4 +139,3 @@ git push -u origin main
 ```
 
 Do not push directly from the private workspace `C:\DeuteriumAPP`.
-
