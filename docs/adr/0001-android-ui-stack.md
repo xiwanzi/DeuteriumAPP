@@ -1,4 +1,4 @@
-# ADR 0001: Android UI 技术栈
+﻿# ADR 0001: Android UI 技术栈
 
 ## Status
 
@@ -60,3 +60,4 @@ Deuterium VIII 的品牌视觉可以在 Material 3 的主题系统上逐步建�
 - [Jetpack Compose](https://developer.android.com/compose)
 - [Material Design 3 in Compose](https://developer.android.com/develop/ui/compose/designsystems/material3)
 - [Interoperability APIs](https://developer.android.com/develop/ui/compose/migrate/interoperability-apis)
+

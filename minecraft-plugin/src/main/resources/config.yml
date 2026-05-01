@@ -1,0 +1,21 @@
+﻿backend:
+  ws-url: "ws://127.0.0.1:28658/bridge/plugin/ws"
+  token: "CHANGE_ME"
+  reconnect-seconds: 5
+
+chat:
+  # Must look like normal server chat and should not mark App source.
+  broadcast-format: "§x§b§1§f§7§f§f%player% §7: §f%message%"
+
+wallet-monitor:
+  enabled: true
+  online-poll-seconds: 15
+  offline-poll-seconds: 300
+  max-offline-players-per-cycle: 100
+
+events:
+  death: true
+  server-say: true
+  join: true
+  quit: true
+

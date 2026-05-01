@@ -1,4 +1,4 @@
-# AGENTS.md
+﻿# AGENTS.md
 
 ## 1. 文档定位
 
@@ -272,3 +272,4 @@ Android 端必须遵循原生 Android 开发规范。当前只锁定“原生 An
 - 最低 Android 版本、目标 SDK 和发布渠道。
 
 这些事项应在后续 `CONTEXT.md`、`docs/prd/` 和 `docs/adr/` 中逐步确认。
+

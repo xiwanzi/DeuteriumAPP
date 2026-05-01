@@ -1,0 +1,36 @@
+.tools/
+DeuteriumAPP-public/
+**/.android/
+
+# Gradle
+.gradle/
+build/
+**/build/
+**/.gradle/
+
+# Local configuration and secrets
+**/config/application.conf
+**/config/local.conf
+**/src/main/resources/application-local.conf
+android-app/local.properties
+plugins/DeuteriumBridge/config.yml
+*.local
+*.env
+*.keystore
+*.jks
+
+# Logs and runtime output
+logs/
+**/logs/
+runtime/
+**/runtime/
+delivery/
+dist/
+**/src/main/local-resources/
+
+# Generated archives and install artifacts
+*.apk
+*.aab
+*.jar
+*.zip
+!**/gradle/wrapper/gradle-wrapper.jar
