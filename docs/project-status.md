@@ -1,6 +1,6 @@
-# Project Status / 项目状态
+﻿# Project Status / 项目状态
 
-Last updated / 更新时间：2026-05-02
+Last updated / 更新时间：2026-05-03
 
 ## 中文
 
@@ -20,6 +20,7 @@ Last updated / 更新时间：2026-05-02
 - 钱包体验：余额刷新、转账、流水展示、离线期间后端记录流水、上线后增量同步。
 - 更新检查：后端通过配置判断当前 App 是否为最新版本，不访问数据库。
 - 连接稳定性：后端使用标准 WebSocket ping/pong 清理半开连接，降低后台假死后必须重启 App 的概率。
+- 后端性能：Repository 写入路径已减少额外查询，验证码尝试计数使用数据库原子自增，App presence 按需读取，过期运营数据定期清理。
 
 ### 最近改进
 
@@ -30,6 +31,13 @@ Last updated / 更新时间：2026-05-02
   - `chat.websocketTimeoutMillis=35000`
 - 新增公开源码导出脚本，避免生产密钥和交付包进入公开仓库。
 - 补充中英双语 README、快速开始、技术架构和维护文档。
+- 新增后端兼容性性能修复：
+  - 余额 upsert 使用单条数据库语句。
+  - App presence 首次写入和已存在记录更新都使用单条数据库语句。
+  - 钱包流水和转账创建写入后不再读回刚插入的记录。
+  - 验证码尝试计数改为数据库原子自增。
+  - 登录失败计数改为数据库原子 upsert 递增。
+  - 新增 V4 维护索引和 6 小时间隔过期数据清理任务。
 
 ### 待完成
 
@@ -58,6 +66,7 @@ Last updated / 更新时间：2026-05-02
 - Wallet experience: balance refresh, transfers, records, offline server-side record capture, incremental sync after reconnect/login.
 - Update check: backend checks the latest App version from config only, without database access.
 - Connection stability: backend uses standard WebSocket ping/pong to clean up half-open connections and reduce App restart cases after background/network stalls.
+- Backend performance: repository write paths now avoid extra readbacks, verification attempts use atomic database increments, App presence is loaded on demand, and expired operational data is cleaned periodically.
 
 ### Recent Improvements
 
@@ -68,6 +77,13 @@ Last updated / 更新时间：2026-05-02
   - `chat.websocketTimeoutMillis=35000`
 - Added a clean public source export script to keep production secrets and delivery artifacts out of the public repository.
 - Added bilingual README, getting started guide, technical architecture, and maintainer docs.
+- Added a backend-compatible performance fix:
+  - Balance upsert now uses one database statement.
+  - Initial and existing App presence writes now use one database statement.
+  - Wallet record and transfer creation no longer read back freshly inserted rows.
+  - Verification attempt counting now uses atomic database increments.
+  - Login failure counting now uses atomic database upsert increments.
+  - Added V4 maintenance indexes and a 6-hour expired-data cleanup task.
 
 ### Remaining Work
 

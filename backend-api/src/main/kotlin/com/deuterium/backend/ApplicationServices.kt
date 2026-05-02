@@ -6,6 +6,7 @@ import com.deuterium.backend.config.AppConfig
 import com.deuterium.backend.repository.AccountRepository
 import com.deuterium.backend.repository.ChatRepository
 import com.deuterium.backend.repository.LoginFailureRepository
+import com.deuterium.backend.repository.MaintenanceRepository
 import com.deuterium.backend.repository.PlayerRefRepository
 import com.deuterium.backend.repository.SessionRepository
 import com.deuterium.backend.repository.VerificationRepository
@@ -21,6 +22,7 @@ class ApplicationServices(
     val sessions: SessionRepository,
     val verifications: VerificationRepository,
     val loginFailures: LoginFailureRepository,
+    val maintenance: MaintenanceRepository,
     val playerRefs: PlayerRefRepository,
     val wallet: WalletRepository,
     val chat: ChatRepository,
@@ -57,6 +59,7 @@ class ApplicationServices(
                 sessions = SessionRepository(config.security.sessionDays),
                 verifications = VerificationRepository(),
                 loginFailures = LoginFailureRepository(),
+                maintenance = MaintenanceRepository(config.security.sessionDays, config.chat.historyRetentionDays),
                 playerRefs = playerRefs,
                 wallet = wallet,
                 chat = chat,
@@ -66,4 +69,3 @@ class ApplicationServices(
         }
     }
 }
-

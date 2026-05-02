@@ -29,10 +29,8 @@ class ValidationTest {
 
     @Test
     fun `password length follows account PRD`() {
-        assertEquals("CHANGE_ME78", Validation.password("CHANGE_ME78"))
-        assertFailsWith<ApiException> { Validation.password("CHANGE_ME7") }
+        assertEquals("12345678", Validation.password("12345678"))
+        assertFailsWith<ApiException> { Validation.password("1234567") }
         assertFailsWith<ApiException> { Validation.password("x".repeat(65)) }
     }
 }
-
-

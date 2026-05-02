@@ -405,7 +405,7 @@ private fun Route.walletRoutes(services: ApplicationServices) {
             else -> "failed"
         }
         val (updated, walletEvents) = dbQuery {
-            val changed = services.wallet.updateTransferStatus(transfer.id, status)
+            val changed = services.wallet.updateTransferStatus(transfer, status)
             val events = mutableListOf<Pair<String, com.deuterium.backend.model.WalletRecord>>()
             val expense = services.wallet.createRecord(user.userId, "expense", recipient, amount, status, note, changed.updatedAt)
             if (expense.status == "success") {
@@ -748,4 +748,3 @@ private suspend fun ApplicationCall.requireUser(services: ApplicationServices): 
 
 private fun ApplicationCall.requireToken(): String =
     bearerToken() ?: throw ApiException("UNAUTHORIZED", "请先登录。", 401)
-

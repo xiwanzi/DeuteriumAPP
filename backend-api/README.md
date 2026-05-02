@@ -48,6 +48,10 @@ Inside the generated runtime directory:
 .\start-backend.bat
 ```
 
+Run `migrate-db.bat` before replacing a production backend. Current migrations include the V4 maintenance indexes used by the expired-data cleanup task.
+
+The backend starts a lightweight cleanup loop every 6 hours. It removes expired sessions, old verification contexts, stale login failures, chat records older than `chat.historyRetentionDays`, and old server events. This does not require Android or Minecraft plugin changes.
+
 ## Ports And URLs
 
 Production defaults:
@@ -93,4 +97,3 @@ Health checks:
 /health/live
 /health/ready
 ```
-

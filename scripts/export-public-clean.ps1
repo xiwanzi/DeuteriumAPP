@@ -79,7 +79,11 @@ function Get-PrivateSecretValues {
         if ($clean -match "^CHANGE_ME") {
             return
         }
-        if ($clean.Length -lt 6 -or $clean -match "^[.\-*]+$") {
+        # Field-level replacements below still sanitize config lines such as
+        # database.password=... . Global replacement is reserved for longer
+        # token-like values to avoid corrupting examples and tests such as
+        # "12345678".
+        if ($clean.Length -lt 12 -or $clean -match "^[.\-*]+$") {
             return
         }
         $values.Add($clean)
@@ -147,7 +151,7 @@ function Update-TextFile([string]$Path) {
     $content = $content -replace "(?m)^pluginBridge\.token=.*$", "pluginBridge.token=CHANGE_ME_TO_LONG_RANDOM_VALUE"
     $content = $content -replace "(?m)^(\s*token:\s*)""[^""]*""", '$1"CHANGE_ME"'
 
-    Set-Content -LiteralPath $Path -Value $content -Encoding UTF8
+    Set-Content -LiteralPath $Path -Value $content.TrimEnd("`r", "`n") -Encoding UTF8
 }
 
 Remove-DirectorySafely $outputFullPath
@@ -157,6 +161,7 @@ $include = @(
     ".gitignore",
     "AGENTS.md",
     "CONTEXT.md",
+    "LICENSE",
     "README.md",
     "android-app",
     "backend-api",
@@ -215,4 +220,3 @@ if (-not $NoZip) {
 } else {
     Write-Host "Public export generated at: $outputFullPath"
 }
-

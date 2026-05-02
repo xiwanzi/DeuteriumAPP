@@ -450,7 +450,7 @@ HTTP 成功响应统一使用：
 ```json
 {
   "verificationToken": "ver_opaque",
-  "code": "CHANGE_ME",
+  "code": "123456",
   "password": "password-8-to-64"
 }
 ```
@@ -560,7 +560,7 @@ HTTP 成功响应统一使用：
 ```json
 {
   "verificationToken": "ver_opaque",
-  "code": "CHANGE_ME",
+  "code": "123456",
   "newPassword": "new-password-8-to-64"
 }
 ```
@@ -1265,7 +1265,7 @@ Authorization: Bearer <plugin-bridge-token>
     "verificationId": "ver_internal",
     "purpose": "registration",
     "gameId": "StarDust",
-    "code": "CHANGE_ME",
+    "code": "123456",
     "expiresAt": "2026-04-29T12:40:00Z"
   }
 }
@@ -1710,4 +1710,3 @@ Authorization: Bearer <plugin-bridge-token>
 App 基础操作覆盖：
 
 - 检查更新：`GET /app/update-check`
-

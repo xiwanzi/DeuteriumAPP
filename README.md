@@ -1,4 +1,4 @@
-# DeuteriumAPP
+﻿# DeuteriumAPP
 
 > Native Android companion app, backend API, and Minecraft plugin bridge for a server community.
 

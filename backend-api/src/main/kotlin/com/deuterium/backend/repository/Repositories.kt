@@ -34,18 +34,26 @@ import com.deuterium.backend.util.Ids
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import org.jetbrains.exposed.exceptions.ExposedSQLException
+import org.jetbrains.exposed.sql.Column
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.greater
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.isNotNull
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.isNull
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.less
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.plus
+import org.jetbrains.exposed.sql.Table
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.insertIgnore
 import org.jetbrains.exposed.sql.or
 import org.jetbrains.exposed.sql.selectAll
+import org.jetbrains.exposed.sql.statements.StatementType
+import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.update
 import java.math.BigDecimal
 import java.security.MessageDigest
@@ -191,7 +199,9 @@ class VerificationRepository {
                     VerificationRequests.consumedAt.isNull() and
                     (VerificationRequests.resendAvailableAt greater now)
             }
-            .maxByOrNull { it[VerificationRequests.createdAt] }
+            .orderBy(VerificationRequests.createdAt to SortOrder.DESC)
+            .limit(1)
+            .singleOrNull()
             ?.get(VerificationRequests.resendAvailableAt)
     }
 
@@ -231,9 +241,10 @@ class VerificationRepository {
             ?.toVerificationRecord()
 
     fun incrementAttempts(id: String) {
-        val row = VerificationRequests.selectAll().where { VerificationRequests.id eq id }.single()
         VerificationRequests.update({ VerificationRequests.id eq id }) {
-            it[attempts] = row[VerificationRequests.attempts] + 1
+            with(org.jetbrains.exposed.sql.SqlExpressionBuilder) {
+                it.update(attempts, attempts + 1)
+            }
         }
     }
 
@@ -275,24 +286,34 @@ class LoginFailureRepository {
 
     fun recordFailure(key: String): Pair<Int, Instant?> {
         val now = Instant.now()
-        val row = LoginFailures.selectAll().where { LoginFailures.failureKey eq key }.singleOrNull()
-        val attempts = (row?.get(LoginFailures.attempts) ?: 0) + 1
-        val lockedUntil = if (attempts >= 5) now.plus(15, ChronoUnit.MINUTES) else null
-        if (row == null) {
-            LoginFailures.insert {
-                it[failureKey] = key
-                it[LoginFailures.attempts] = attempts
-                it[LoginFailures.lockedUntil] = lockedUntil
-                it[updatedAt] = now
-            }
-        } else {
-            LoginFailures.update({ LoginFailures.failureKey eq key }) {
-                it[LoginFailures.attempts] = attempts
-                it[LoginFailures.lockedUntil] = lockedUntil
-                it[updatedAt] = now
-            }
-        }
-        return attempts to lockedUntil
+        upsertLoginFailure(key, now, now.plus(15, ChronoUnit.MINUTES))
+        val row = LoginFailures.selectAll().where { LoginFailures.failureKey eq key }.single()
+        return row[LoginFailures.attempts] to row[LoginFailures.lockedUntil]
+    }
+
+    private fun upsertLoginFailure(key: String, updatedAt: Instant, lockedUntil: Instant) {
+        val table = LoginFailures.sqlName()
+        val failureKey = LoginFailures.failureKey.sqlName()
+        val attempts = LoginFailures.attempts.sqlName()
+        val locked = LoginFailures.lockedUntil.sqlName()
+        val updated = LoginFailures.updatedAt.sqlName()
+        TransactionManager.current().exec(
+            """
+            INSERT INTO $table ($failureKey, $attempts, $locked, $updated)
+            VALUES (?, 1, NULL, ?)
+            ON DUPLICATE KEY UPDATE
+              $locked = CASE WHEN $attempts + 1 >= 5 THEN ? ELSE NULL END,
+              $attempts = $attempts + 1,
+              $updated = ?
+            """.trimIndent(),
+            listOf(
+                LoginFailures.failureKey.columnType to key,
+                LoginFailures.updatedAt.columnType to updatedAt,
+                LoginFailures.lockedUntil.columnType to lockedUntil,
+                LoginFailures.updatedAt.columnType to updatedAt
+            ),
+            StatementType.UPDATE
+        )
     }
 
     fun clear(key: String) {
@@ -302,6 +323,14 @@ class LoginFailureRepository {
 
 class PlayerRefRepository(private val accounts: AccountRepository) {
     companion object {
+        private const val PlayerRefLockStripeCount = 64
+        private val playerRefLocks = Array(PlayerRefLockStripeCount) { Any() }
+
+        private val playerRefPriority: Comparator<PlayerRefRecord> =
+            compareByDescending<PlayerRefRecord> { it.registered }
+                .thenByDescending { it.expiresAt == null }
+                .thenByDescending { it.confirmedAt }
+
         fun stableMissingPlayerRef(serverUuid: String): String {
             val digest = MessageDigest.getInstance("SHA-256").digest(serverUuid.toByteArray(Charsets.UTF_8))
             return "player_cached_" + Base64.getUrlEncoder().withoutPadding().encodeToString(digest).take(32)
@@ -309,6 +338,22 @@ class PlayerRefRepository(private val accounts: AccountRepository) {
     }
 
     fun ensurePlayerRef(
+        serverUuid: String,
+        gameId: String,
+        qq: String?,
+        registered: Boolean,
+        online: Boolean,
+        source: String,
+        expiresAt: Instant?,
+    ): PlayerRefRecord {
+        val lockKey = "$serverUuid|$registered"
+        val lock = playerRefLocks[Math.floorMod(lockKey.hashCode(), playerRefLocks.size)]
+        return synchronized(lock) {
+            ensurePlayerRefLocked(serverUuid, gameId, qq, registered, online, source, expiresAt)
+        }
+    }
+
+    private fun ensurePlayerRefLocked(
         serverUuid: String,
         gameId: String,
         qq: String?,
@@ -382,14 +427,13 @@ class PlayerRefRepository(private val accounts: AccountRepository) {
                 (PlayerRefs.serverUuid inList uniqueServerUuids) and
                     ((PlayerRefs.expiresAt.isNull()) or (PlayerRefs.expiresAt greater now))
             }
-            .map { it.toPlayerRefRecord() }
-            .groupBy { it.serverUuid }
-            .mapValues { (_, refs) ->
-                refs.sortedWith(
-                    compareByDescending<PlayerRefRecord> { it.registered }
-                        .thenByDescending { it.expiresAt == null }
-                        .thenByDescending { it.confirmedAt }
-                ).first()
+            .fold(mutableMapOf<String, PlayerRefRecord>()) { bestByServerUuid, row ->
+                val candidate = row.toPlayerRefRecord()
+                val current = bestByServerUuid[candidate.serverUuid]
+                if (current == null || playerRefPriority.compare(candidate, current) < 0) {
+                    bestByServerUuid[candidate.serverUuid] = candidate
+                }
+                bestByServerUuid
             }
     }
 
@@ -447,24 +491,45 @@ class WalletRepository(private val playerRefs: PlayerRefRepository) {
 
     fun upsertBalance(userId: String, amount: BigDecimal): WalletBalance {
         val now = Instant.now()
-        val existing = WalletBalances.selectAll().where { WalletBalances.userId eq userId }.singleOrNull()
-        if (existing == null) {
-            WalletBalances.insert {
-                it[WalletBalances.userId] = userId
-                it[WalletBalances.amount] = amount
-                it[currency] = "CREDIT"
-                it[fresh] = true
-                it[refreshedAt] = now
-            }
-        } else {
-            WalletBalances.update({ WalletBalances.userId eq userId }) {
-                it[WalletBalances.amount] = amount
-                it[currency] = "CREDIT"
-                it[fresh] = true
-                it[refreshedAt] = now
-            }
-        }
-        return cachedBalance(userId)!!
+        upsertWalletBalance(userId, amount, now)
+        return WalletBalance(
+            currency = "CREDIT",
+            amount = amount.money(),
+            fresh = true,
+            refreshedAt = now.iso()
+        )
+    }
+
+    private fun upsertWalletBalance(userId: String, amount: BigDecimal, refreshedAt: Instant) {
+        val table = WalletBalances.sqlName()
+        val user = WalletBalances.userId.sqlName()
+        val balanceAmount = WalletBalances.amount.sqlName()
+        val balanceCurrency = WalletBalances.currency.sqlName()
+        val balanceFresh = WalletBalances.fresh.sqlName()
+        val balanceRefreshedAt = WalletBalances.refreshedAt.sqlName()
+        TransactionManager.current().exec(
+            """
+            INSERT INTO $table ($user, $balanceAmount, $balanceCurrency, $balanceFresh, $balanceRefreshedAt)
+            VALUES (?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+              $balanceAmount = ?,
+              $balanceCurrency = ?,
+              $balanceFresh = ?,
+              $balanceRefreshedAt = ?
+            """.trimIndent(),
+            listOf(
+                WalletBalances.userId.columnType to userId,
+                WalletBalances.amount.columnType to amount,
+                WalletBalances.currency.columnType to "CREDIT",
+                WalletBalances.fresh.columnType to true,
+                WalletBalances.refreshedAt.columnType to refreshedAt,
+                WalletBalances.amount.columnType to amount,
+                WalletBalances.currency.columnType to "CREDIT",
+                WalletBalances.fresh.columnType to true,
+                WalletBalances.refreshedAt.columnType to refreshedAt
+            ),
+            StatementType.UPDATE
+        )
     }
 
     fun createTransfer(
@@ -493,7 +558,22 @@ class WalletRepository(private val playerRefs: PlayerRefRepository) {
             it[createdAt] = now
             it[updatedAt] = now
         }
-        return getTransfer(id, user.userId)!!
+        return TransferRecord(
+            id = id,
+            clientRequestId = clientRequestId,
+            userId = user.userId,
+            requestFingerprint = fingerprint,
+            fromServerUuid = user.serverUuid,
+            toServerUuid = recipient.serverUuid,
+            recipientGameId = recipient.gameId,
+            recipientQq = recipient.qq,
+            amount = amount,
+            currency = "CREDIT",
+            note = note,
+            status = "processing",
+            createdAt = now,
+            updatedAt = now
+        )
     }
 
     fun findTransferByClientRequest(userId: String, clientRequestId: String): TransferRecord? =
@@ -502,12 +582,20 @@ class WalletRepository(private val playerRefs: PlayerRefRepository) {
             .singleOrNull()
             ?.toTransferRecord()
 
-    fun updateTransferStatus(id: String, status: String): TransferRecord {
+    fun updateTransferStatus(record: TransferRecord, status: String): TransferRecord {
+        val updatedAt = Instant.now()
+        Transfers.update({ Transfers.id eq record.id }) {
+            it[Transfers.status] = status
+            it[Transfers.updatedAt] = updatedAt
+        }
+        return record.copy(status = status, updatedAt = updatedAt)
+    }
+
+    fun updateTransferStatus(id: String, status: String) {
         Transfers.update({ Transfers.id eq id }) {
             it[Transfers.status] = status
             it[updatedAt] = Instant.now()
         }
-        return Transfers.selectAll().where { Transfers.id eq id }.single().toTransferRecord()
     }
 
     fun getTransfer(id: String, userId: String): TransferRecord? =
@@ -537,10 +625,11 @@ class WalletRepository(private val playerRefs: PlayerRefRepository) {
         note: String?,
         occurredAt: Instant = Instant.now(),
     ): WalletRecord? {
-        if (WalletRecords.selectAll().where { WalletRecords.id eq recordId }.any()) {
-            return null
+        return try {
+            insertRecord(recordId, userId, direction, other, amount, status, note, occurredAt)
+        } catch (e: ExposedSQLException) {
+            if (e.isDuplicateKey()) null else throw e
         }
-        return insertRecord(recordId, userId, direction, other, amount, status, note, occurredAt)
     }
 
     private fun insertRecord(
@@ -566,7 +655,23 @@ class WalletRepository(private val playerRefs: PlayerRefRepository) {
             it[WalletRecords.note] = note
             it[WalletRecords.occurredAt] = occurredAt
         }
-        return walletRecord(WalletRecords.selectAll().where { WalletRecords.id eq recordId }.single(), mapOf(other.serverUuid to other))
+        return WalletRecord(
+            recordId = recordId,
+            direction = direction,
+            otherPlayer = PlayerSummary(
+                playerRef = other.playerRef,
+                gameId = other.gameId,
+                qq = other.qq,
+                online = other.online,
+                registered = other.registered,
+                source = other.source
+            ),
+            amount = amount.money(),
+            currency = "CREDIT",
+            status = status,
+            note = note,
+            occurredAt = occurredAt.iso()
+        )
     }
 
     fun listRecords(userId: String, limit: Int): List<WalletRecord> {
@@ -668,23 +773,36 @@ class ChatRepository(
     private val accounts: AccountRepository,
 ) {
     fun updateAppPresence(userId: String, foreground: Boolean, at: Instant = Instant.now()) {
-        val existing = AppPresence.selectAll().where { AppPresence.userId eq userId }.singleOrNull()
-        if (existing == null) {
-            AppPresence.insert {
-                it[AppPresence.userId] = userId
-                it[AppPresence.foreground] = foreground
-                it[AppPresence.lastForegroundAt] = at.takeIf { foreground }
-                it[AppPresence.lastSeenAt] = at
-                it[AppPresence.updatedAt] = at
-            }
-        } else {
-            AppPresence.update({ AppPresence.userId eq userId }) {
-                it[AppPresence.foreground] = foreground
-                if (foreground) it[AppPresence.lastForegroundAt] = at
-                it[AppPresence.lastSeenAt] = at
-                it[AppPresence.updatedAt] = at
-            }
-        }
+        val table = AppPresence.sqlName()
+        val user = AppPresence.userId.sqlName()
+        val foregroundColumn = AppPresence.foreground.sqlName()
+        val lastForegroundAt = AppPresence.lastForegroundAt.sqlName()
+        val lastSeenAt = AppPresence.lastSeenAt.sqlName()
+        val updatedAt = AppPresence.updatedAt.sqlName()
+        TransactionManager.current().exec(
+            """
+            INSERT INTO $table ($user, $foregroundColumn, $lastForegroundAt, $lastSeenAt, $updatedAt)
+            VALUES (?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+              $foregroundColumn = ?,
+              $lastForegroundAt = CASE WHEN ? THEN ? ELSE $lastForegroundAt END,
+              $lastSeenAt = ?,
+              $updatedAt = ?
+            """.trimIndent(),
+            listOf(
+                AppPresence.userId.columnType to userId,
+                AppPresence.foreground.columnType to foreground,
+                AppPresence.lastForegroundAt.columnType to at.takeIf { foreground },
+                AppPresence.lastSeenAt.columnType to at,
+                AppPresence.updatedAt.columnType to at,
+                AppPresence.foreground.columnType to foreground,
+                AppPresence.foreground.columnType to foreground,
+                AppPresence.lastForegroundAt.columnType to at,
+                AppPresence.lastSeenAt.columnType to at,
+                AppPresence.updatedAt.columnType to at
+            ),
+            StatementType.UPDATE
+        )
     }
 
     fun followPlayer(userId: String, playerRef: String): PlayerRefRecord? {
@@ -719,11 +837,11 @@ class ChatRepository(
         serverPlayers: List<OnlinePlayer>,
         appConnections: Map<String, Boolean> = emptyMap(),
     ): List<PlayerDirectoryItem> {
-        val presence = appPresenceByUserId()
         val followed = followedServerUuids(currentUser.userId)
         val serverRefsByPlayerRef = playerRefs.findByPlayerRefs(serverPlayers.map { it.playerRef })
         val activeUsers = accounts.listActiveUsers()
         val registeredUsersByServerUuid = activeUsers.associateBy { it.serverUuid }
+        val presence = appPresenceByUserId(activeUsers.map { it.userId })
         val refsByServerUuid = playerRefs.findActiveByServerUuids(
             activeUsers.map { it.serverUuid } + serverRefsByPlayerRef.values.map { it.serverUuid }
         )
@@ -783,14 +901,15 @@ class ChatRepository(
         onlineSince: String? = null,
         appConnections: Map<String, Boolean> = emptyMap(),
     ): PlayerDirectoryItem {
+        val registeredUsersByServerUuid = accounts.findByServerUuids(listOf(ref.serverUuid))
         return playerDirectoryItem(
             currentUser = currentUser,
             ref = ref,
             serverOnline = serverOnline,
             onlineSince = onlineSince,
-            presence = appPresenceByUserId(),
+            presence = appPresenceByUserId(registeredUsersByServerUuid.values.map { it.userId }),
             followed = followedServerUuids(currentUser.userId),
-            registeredUsersByServerUuid = accounts.findByServerUuids(listOf(ref.serverUuid)),
+            registeredUsersByServerUuid = registeredUsersByServerUuid,
             appConnections = appConnections
         )
     }
@@ -802,14 +921,15 @@ class ChatRepository(
         appConnections: Map<String, Boolean> = emptyMap(),
     ): PlayerDirectoryItem {
         val onlinePlayer = onlinePlayerFor(ref, serverPlayers)
+        val registeredUsersByServerUuid = accounts.findByServerUuids(listOf(ref.serverUuid))
         return playerDirectoryItem(
             currentUser = currentUser,
             ref = ref,
             serverOnline = onlinePlayer != null,
             onlineSince = onlinePlayer?.onlineSince,
-            presence = appPresenceByUserId(),
+            presence = appPresenceByUserId(registeredUsersByServerUuid.values.map { it.userId }),
             followed = followedServerUuids(currentUser.userId),
-            registeredUsersByServerUuid = accounts.findByServerUuids(listOf(ref.serverUuid)),
+            registeredUsersByServerUuid = registeredUsersByServerUuid,
             appConnections = appConnections
         )
     }
@@ -867,21 +987,31 @@ class ChatRepository(
 
     fun updatePresence(players: List<OnlinePlayer>, updatedAt: Instant) {
         val json = Json.encodeToString(players)
-        val exists = PresenceSnapshots.selectAll().where { PresenceSnapshots.id eq 1 }.singleOrNull()
-        if (exists == null) {
-            PresenceSnapshots.insert {
-                it[id] = 1
-                it[onlineCount] = players.size
-                it[playersJson] = json
-                it[PresenceSnapshots.updatedAt] = updatedAt
-            }
-        } else {
-            PresenceSnapshots.update({ PresenceSnapshots.id eq 1 }) {
-                it[onlineCount] = players.size
-                it[playersJson] = json
-                it[PresenceSnapshots.updatedAt] = updatedAt
-            }
-        }
+        val table = PresenceSnapshots.sqlName()
+        val snapshotId = PresenceSnapshots.id.sqlName()
+        val onlineCount = PresenceSnapshots.onlineCount.sqlName()
+        val playersJson = PresenceSnapshots.playersJson.sqlName()
+        val snapshotUpdatedAt = PresenceSnapshots.updatedAt.sqlName()
+        TransactionManager.current().exec(
+            """
+            INSERT INTO $table ($snapshotId, $onlineCount, $playersJson, $snapshotUpdatedAt)
+            VALUES (?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+              $onlineCount = ?,
+              $playersJson = ?,
+              $snapshotUpdatedAt = ?
+            """.trimIndent(),
+            listOf(
+                PresenceSnapshots.id.columnType to 1,
+                PresenceSnapshots.onlineCount.columnType to players.size,
+                PresenceSnapshots.playersJson.columnType to json,
+                PresenceSnapshots.updatedAt.columnType to updatedAt,
+                PresenceSnapshots.onlineCount.columnType to players.size,
+                PresenceSnapshots.playersJson.columnType to json,
+                PresenceSnapshots.updatedAt.columnType to updatedAt
+            ),
+            StatementType.UPDATE
+        )
     }
 
     fun presenceSnapshot(): PresenceSnapshot? =
@@ -952,14 +1082,19 @@ class ChatRepository(
         return serverPlayers.firstOrNull { player -> refsByPlayerRef[player.playerRef]?.serverUuid == ref.serverUuid }
     }
 
-    private fun appPresenceByUserId(): Map<String, AppPresenceRecord> =
-        AppPresence.selectAll().associate {
+    private fun appPresenceByUserId(userIds: Collection<String>): Map<String, AppPresenceRecord> {
+        val uniqueUserIds = userIds.filter { it.isNotBlank() }.distinct()
+        if (uniqueUserIds.isEmpty()) return emptyMap()
+        return AppPresence.selectAll()
+            .where { AppPresence.userId inList uniqueUserIds }
+            .associate {
             it[AppPresence.userId] to AppPresenceRecord(
                 userId = it[AppPresence.userId],
                 foreground = it[AppPresence.foreground],
                 lastSeenAt = it[AppPresence.lastSeenAt]
             )
         }
+    }
 
     private fun followedServerUuids(userId: String): Set<String> =
         PlayerFollows.selectAll()
@@ -997,9 +1132,64 @@ data class PresenceSnapshot(
     val updatedAt: Instant,
 )
 
+class MaintenanceRepository(
+    private val sessionDays: Long,
+    private val chatRetentionDays: Long,
+) {
+    fun cleanupExpiredData(now: Instant = Instant.now()): MaintenanceCleanupResult {
+        val verificationCutoff = now.minus(1, ChronoUnit.DAYS)
+        val loginFailureCutoff = now.minus(1, ChronoUnit.DAYS)
+        val chatCutoff = now.minus(chatRetentionDays, ChronoUnit.DAYS)
+        val sessionCutoff = now
+        val revokedSessionCutoff = now.minus(sessionDays.coerceAtLeast(1), ChronoUnit.DAYS)
+
+        val sessions = Sessions.deleteWhere {
+            (Sessions.expiresAt less sessionCutoff) or
+                (Sessions.revokedAt.isNotNull() and (Sessions.revokedAt less revokedSessionCutoff))
+        }
+        val verifications = VerificationRequests.deleteWhere {
+            VerificationRequests.expiresAt less verificationCutoff
+        }
+        val loginFailures = LoginFailures.deleteWhere {
+            (LoginFailures.updatedAt less loginFailureCutoff) or
+                (LoginFailures.lockedUntil less now)
+        }
+        val chatMessages = ChatMessages.deleteWhere {
+            ChatMessages.sentAt less chatCutoff
+        }
+        val serverEvents = ServerEvents.deleteWhere {
+            ServerEvents.occurredAt less chatCutoff
+        }
+
+        return MaintenanceCleanupResult(
+            sessions = sessions,
+            verificationRequests = verifications,
+            loginFailures = loginFailures,
+            chatMessages = chatMessages,
+            serverEvents = serverEvents
+        )
+    }
+}
+
+data class MaintenanceCleanupResult(
+    val sessions: Int,
+    val verificationRequests: Int,
+    val loginFailures: Int,
+    val chatMessages: Int,
+    val serverEvents: Int,
+)
+
 private data class AppPresenceRecord(
     val userId: String,
     val foreground: Boolean,
     val lastSeenAt: Instant,
 )
 
+private fun ExposedSQLException.isDuplicateKey(): Boolean =
+    sqlState == "23505" || errorCode == 1062
+
+private fun Table.sqlName(): String = tableName.sqlIdentifier()
+
+private fun Column<*>.sqlName(): String = name.sqlIdentifier()
+
+private fun String.sqlIdentifier(): String = "`" + replace("`", "``") + "`"

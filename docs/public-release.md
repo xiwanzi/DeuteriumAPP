@@ -1,4 +1,4 @@
-# Public Release Checklist / 公开发布检查清单
+﻿# Public Release Checklist / 公开发布检查清单
 
 Last updated / 更新时间：2026-05-02
 

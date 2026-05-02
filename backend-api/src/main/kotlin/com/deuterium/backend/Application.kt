@@ -10,6 +10,7 @@ import com.deuterium.backend.routes.installPublicRoutes
 import com.deuterium.backend.util.Ids
 import com.deuterium.backend.web.ApiException
 import com.deuterium.backend.web.RequestIdKey
+import com.deuterium.backend.web.dbQuery
 import com.deuterium.backend.web.fail
 import com.deuterium.backend.web.requestId
 import io.ktor.serialization.kotlinx.json.json
@@ -27,6 +28,11 @@ import io.ktor.server.request.path
 import io.ktor.server.response.respond
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
@@ -62,7 +68,11 @@ private fun runBackend() {
     }
     val dataSource = DatabaseFactory.connect(config.database)
     val services = ApplicationServices.create(config)
-    Runtime.getRuntime().addShutdownHook(Thread { dataSource.close() })
+    val maintenanceScope = startMaintenanceLoop(services)
+    Runtime.getRuntime().addShutdownHook(Thread {
+        maintenanceScope.cancel()
+        dataSource.close()
+    })
 
     val publicServer = embeddedServer(
         Netty,
@@ -112,6 +122,41 @@ fun Application.bridgeModule(services: ApplicationServices) {
     }
 }
 
+private fun startMaintenanceLoop(services: ApplicationServices): CoroutineScope {
+    val logger = LoggerFactory.getLogger("DeuteriumMaintenance")
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    scope.launch {
+        while (true) {
+            try {
+                val result = dbQuery { services.maintenance.cleanupExpiredData() }
+                val deleted = result.sessions +
+                    result.verificationRequests +
+                    result.loginFailures +
+                    result.chatMessages +
+                    result.serverEvents
+                if (deleted > 0) {
+                    logger.info(
+                        "Backend cleanup removed sessions={}, verifications={}, loginFailures={}, chatMessages={}, serverEvents={}",
+                        result.sessions,
+                        result.verificationRequests,
+                        result.loginFailures,
+                        result.chatMessages,
+                        result.serverEvents
+                    )
+                }
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (cause: Throwable) {
+                logger.warn("Backend cleanup failed", cause)
+            }
+            delay(MaintenanceCleanupIntervalMillis)
+        }
+    }
+    return scope
+}
+
+private const val MaintenanceCleanupIntervalMillis: Long = 6 * 60 * 60 * 1000
+
 private fun Application.configureCommon(services: ApplicationServices) {
     val logger = LoggerFactory.getLogger("DeuteriumBackend")
     val json = services.json
@@ -147,4 +192,3 @@ private fun Application.configureCommon(services: ApplicationServices) {
         }
     }
 }
-
