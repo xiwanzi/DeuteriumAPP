@@ -1,0 +1,11 @@
+﻿name: DeuteriumBridge
+main: com.deuterium.plugin.DeuteriumBridgePlugin
+version: 0.1.0
+api-version: "1.20"
+depend:
+  - Vault
+softdepend:
+  - XConomy
+description: DeuteriumAPP backend bridge for account verification, wallet transfer, and chat sync.
+
+
