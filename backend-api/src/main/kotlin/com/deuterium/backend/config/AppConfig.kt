@@ -13,6 +13,30 @@ data class AppConfig(
     val security: SecurityConfig,
     val pluginBridge: PluginBridgeConfig,
     val chat: ChatConfig,
+    val ai: AiConfig = AiConfig(
+        enabled = false,
+        providerApiKey = "",
+        providerBaseUrl = "https://api.deepseek.com",
+        defaultModel = "deepseek-v4-flash",
+        requestTimeoutMillis = 120000,
+        connectTimeoutMillis = 12000,
+        firstTokenTimeoutMillis = 60000,
+        chunkIdleTimeoutMillis = 45000,
+        streamHeartbeatMillis = 8000,
+        knowledgeToolTimeoutMillis = 8000,
+        knowledgeMaxToolCalls = 1,
+        knowledgeMaxChunks = 5,
+        quotaWindowHours = 5,
+        maxInputChars = 2000,
+        maxContextMessages = 10
+    ),
+    val oneBot: OneBotConfig = OneBotConfig(
+        token = "",
+        botSelfId = "",
+        defaultGroupId = "",
+        defaultTriggerPattern = "^(/ai|!ai)\\s+(.+)$"
+    ),
+    val admin: AdminConfig = AdminConfig(token = ""),
     val oidc: OidcConfig,
     val app: AppVersionConfig,
     val logLevel: String,
@@ -59,6 +83,32 @@ data class AppConfig(
                     historyRetentionDays = props.value("chat.historyRetentionDays", "30").toLong(),
                     websocketPingIntervalMillis = props.value("chat.websocketPingIntervalMillis", "15000").toLong(),
                     websocketTimeoutMillis = props.value("chat.websocketTimeoutMillis", "35000").toLong()
+                ),
+                ai = AiConfig(
+                    enabled = props.bool("ai.enabled", true),
+                    providerApiKey = props.value("ai.providerApiKey", ""),
+                    providerBaseUrl = props.value("ai.providerBaseUrl", "https://api.deepseek.com").trimEnd('/'),
+                    defaultModel = props.value("ai.defaultModel", "deepseek-v4-flash"),
+                    requestTimeoutMillis = props.value("ai.requestTimeoutMillis", "120000").toLong(),
+                    connectTimeoutMillis = props.value("ai.connectTimeoutMillis", "12000").toLong(),
+                    firstTokenTimeoutMillis = props.value("ai.firstTokenTimeoutMillis", "60000").toLong(),
+                    chunkIdleTimeoutMillis = props.value("ai.chunkIdleTimeoutMillis", "45000").toLong(),
+                    streamHeartbeatMillis = props.value("ai.streamHeartbeatMillis", "8000").toLong(),
+                    knowledgeToolTimeoutMillis = props.value("ai.knowledgeToolTimeoutMillis", "8000").toLong(),
+                    knowledgeMaxToolCalls = props.value("ai.knowledgeMaxToolCalls", "1").toInt(),
+                    knowledgeMaxChunks = props.value("ai.knowledgeMaxChunks", "5").toInt(),
+                    quotaWindowHours = props.value("ai.quotaWindowHours", "5").toLong(),
+                    maxInputChars = props.value("ai.maxInputChars", "2000").toInt(),
+                    maxContextMessages = props.value("ai.maxContextMessages", "10").toInt()
+                ),
+                oneBot = OneBotConfig(
+                    token = props.value("oneBot.token", ""),
+                    botSelfId = props.value("oneBot.botSelfId", ""),
+                    defaultGroupId = props.value("oneBot.defaultGroupId", ""),
+                    defaultTriggerPattern = props.value("oneBot.defaultTriggerPattern", "^(/ai|!ai)\\s+(.+)$")
+                ),
+                admin = AdminConfig(
+                    token = props.value("admin.token", "")
                 ),
                 oidc = OidcConfig(
                     enabled = props.bool("oidc.enabled", false),
@@ -144,6 +194,50 @@ data class ChatConfig(
         }
     }
 }
+
+data class AiConfig(
+    val enabled: Boolean,
+    val providerApiKey: String,
+    val providerBaseUrl: String,
+    val defaultModel: String,
+    val requestTimeoutMillis: Long,
+    val connectTimeoutMillis: Long,
+    val firstTokenTimeoutMillis: Long,
+    val chunkIdleTimeoutMillis: Long,
+    val streamHeartbeatMillis: Long,
+    val knowledgeToolTimeoutMillis: Long,
+    val knowledgeMaxToolCalls: Int,
+    val knowledgeMaxChunks: Int,
+    val quotaWindowHours: Long,
+    val maxInputChars: Int,
+    val maxContextMessages: Int,
+) {
+    init {
+        require(providerBaseUrl.isNotBlank()) { "ai.providerBaseUrl must not be blank." }
+        require(requestTimeoutMillis > 0) { "ai.requestTimeoutMillis must be positive." }
+        require(connectTimeoutMillis > 0) { "ai.connectTimeoutMillis must be positive." }
+        require(firstTokenTimeoutMillis > 0) { "ai.firstTokenTimeoutMillis must be positive." }
+        require(chunkIdleTimeoutMillis > 0) { "ai.chunkIdleTimeoutMillis must be positive." }
+        require(streamHeartbeatMillis in 1000..60000) { "ai.streamHeartbeatMillis must be 1000..60000." }
+        require(knowledgeToolTimeoutMillis > 0) { "ai.knowledgeToolTimeoutMillis must be positive." }
+        require(knowledgeMaxToolCalls in 0..2) { "ai.knowledgeMaxToolCalls must be 0..2." }
+        require(knowledgeMaxChunks in 0..12) { "ai.knowledgeMaxChunks must be 0..12." }
+        require(quotaWindowHours > 0) { "ai.quotaWindowHours must be positive." }
+        require(maxInputChars in 1..10000) { "ai.maxInputChars must be 1..10000." }
+        require(maxContextMessages in 0..50) { "ai.maxContextMessages must be 0..50." }
+    }
+}
+
+data class OneBotConfig(
+    val token: String,
+    val botSelfId: String,
+    val defaultGroupId: String,
+    val defaultTriggerPattern: String,
+)
+
+data class AdminConfig(
+    val token: String,
+)
 
 data class OidcConfig(
     val enabled: Boolean,

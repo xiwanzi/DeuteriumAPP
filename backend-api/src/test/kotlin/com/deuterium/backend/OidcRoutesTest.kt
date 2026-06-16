@@ -2,8 +2,11 @@ package com.deuterium.backend
 
 import com.deuterium.backend.config.AppConfig
 import com.deuterium.backend.config.AppVersionConfig
+import com.deuterium.backend.config.AdminConfig
+import com.deuterium.backend.config.AiConfig
 import com.deuterium.backend.config.ChatConfig
 import com.deuterium.backend.config.DatabaseConfig
+import com.deuterium.backend.config.OneBotConfig
 import com.deuterium.backend.config.OidcConfig
 import com.deuterium.backend.config.PluginBridgeConfig
 import com.deuterium.backend.config.SecurityConfig
@@ -40,6 +43,7 @@ import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.junit.jupiter.api.parallel.ResourceLock
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.SchemaUtils
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -51,6 +55,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
+@ResourceLock("exposed-default-database")
 class OidcRoutesTest {
     @Test
     fun `well known configuration advertises configured issuer and endpoints`() = withOidcApp { services ->
@@ -173,11 +178,11 @@ class OidcRoutesTest {
     }
 
     private fun withOidcApp(block: (ApplicationServices) -> Unit) {
-        Database.connect(
+        val database = Database.connect(
             url = "jdbc:h2:mem:${UUID.randomUUID()};MODE=MySQL;DATABASE_TO_UPPER=false;DB_CLOSE_DELAY=-1",
             driver = "org.h2.Driver"
         )
-        transaction {
+        transaction(database) {
             SchemaUtils.create(
                 Users,
                 Sessions,
@@ -250,6 +255,9 @@ class OidcRoutesTest {
             security = SecurityConfig("session-pepper", "verification-pepper", 30),
             pluginBridge = PluginBridgeConfig("bridge-token", 10000, 30000, 90000),
             chat = ChatConfig(30, 15000, 35000),
+            ai = AiConfig(false, "", "https://api.deepseek.com", "deepseek-v4-flash", 120000, 12000, 60000, 45000, 8000, 8000, 1, 5, 5, 2000, 10),
+            oneBot = OneBotConfig("", "", "", "^(/ai|!ai)\\s+(.+)$"),
+            admin = AdminConfig(""),
             oidc = OidcConfig(
                 enabled = true,
                 issuer = TestIssuer,

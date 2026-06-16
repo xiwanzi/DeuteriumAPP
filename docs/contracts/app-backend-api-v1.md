@@ -236,6 +236,22 @@ HTTP 成功响应统一使用：
 | `CHAT_SEND_FAILED` | 409/ws | 聊天发送失败 |
 | `SENDER_IDENTITY_UNCONFIRMED` | 409/ws | 发送者身份不可确认 |
 
+AI 错误码：
+
+| code | HTTP/SSE | 含义 |
+| --- | --- | --- |
+| `AI_DISABLED` | 503/sse | AI 功能未启用或模型密钥未配置 |
+| `AI_MESSAGE_EMPTY` | 422/sse | AI 消息为空 |
+| `AI_MESSAGE_TOO_LONG` | 422/sse | AI 消息超过长度限制 |
+| `AI_QUOTA_EXCEEDED` | 429/sse | AI 请求额度已用完 |
+| `AI_PROVIDER_UNAVAILABLE` | 503/sse | 模型供应商不可用 |
+| `AI_PROVIDER_TIMEOUT` | 503/sse | 模型供应商响应超时 |
+| `AI_PROMPT_RISK_BLOCKED` | 422/sse | 请求触发提示词攻击或安全风险拦截 |
+| `AI_PLAN_NOT_FOUND` | 404 | AI 套餐不存在或已下架 |
+| `AI_PURCHASE_DUPLICATE` | 409 | 购买幂等键重复且内容不一致 |
+| `AI_PURCHASE_FAILED` | 409 | AI 套餐购买失败 |
+| `AI_PURCHASE_RESULT_UNKNOWN` | 202 | AI 套餐购买结果未知，需要后台审计 |
+
 ## 3. 共享类型
 
 ### 3.1 `UserProfile`
@@ -395,6 +411,53 @@ HTTP 成功响应统一使用：
   "onlineSince": "2026-04-29T12:00:00Z"
 }
 ```
+
+### 3.10 `AiQuota`
+
+```json
+{
+  "used": 1,
+  "limit": 20,
+  "remaining": 19,
+  "windowHours": 5,
+  "resetsAt": "2026-06-15T12:00:00Z"
+}
+```
+
+### 3.11 `AiPlan`
+
+```json
+{
+  "planId": "plan_pro",
+  "code": "pro",
+  "name": "AI Pro",
+  "description": "免费额度 2 倍的限时套餐",
+  "price": "500.00",
+  "currency": "CREDIT",
+  "quotaPerWindow": 40,
+  "windowHours": 5,
+  "durationDays": 30,
+  "modelTier": "flash",
+  "active": true
+}
+```
+
+### 3.12 `AiMessage`
+
+```json
+{
+  "messageId": "aim_opaque",
+  "conversationId": "aic_opaque",
+  "role": "assistant",
+  "content": "你好，我是 xxxAI。",
+  "createdAt": "2026-06-15T12:00:00Z"
+}
+```
+
+`role` 只允许：
+
+- `user`
+- `assistant`
 
 ## 4. Account HTTP API
 
@@ -1186,9 +1249,224 @@ App 与后端 WebSocket 消息统一格式：
 - 不推给发送者自己。
 - 旧 App 忽略未知 WebSocket 类型即可保持兼容。
 
-## 8. Plugin Bridge WebSocket
+## 8. AI HTTP API
 
-### 8.1 连接
+AI HTTP API 复用 `/api/v1`、opaque Bearer token、统一成功/错误响应和 `X-Request-Id`。
+
+### 8.1 获取 AI 状态
+
+`GET /api/v1/ai/me`
+
+响应：
+
+```json
+{
+  "requestId": "req_opaque",
+  "data": {
+    "assistantName": "xxxAI",
+    "plan": {},
+    "quota": {},
+    "conversation": {
+      "conversationId": "aic_opaque",
+      "active": true,
+      "startedAt": "2026-06-15T12:00:00Z",
+      "updatedAt": "2026-06-15T12:00:00Z"
+    }
+  }
+}
+```
+
+### 8.2 获取套餐列表
+
+`GET /api/v1/ai/plans`
+
+响应：
+
+```json
+{
+  "requestId": "req_opaque",
+  "data": {
+    "plans": []
+  }
+}
+```
+
+规则：
+
+- App 购买页必须以该接口返回为准，不写死套餐额度、价格或有效期。
+
+### 8.3 获取当前会话消息
+
+`GET /api/v1/ai/messages?limit=50&before=opaque`
+
+响应：
+
+```json
+{
+  "requestId": "req_opaque",
+  "data": {
+    "messages": []
+  }
+}
+```
+
+规则：
+
+- 只返回当前活跃会话消息。
+- `/new` 或 reset 后旧会话不在 App 恢复。
+
+### 8.4 流式发送 AI 消息
+
+`POST /api/v1/ai/chat/stream`
+
+请求：
+
+```json
+{
+  "clientMessageId": "android-ai-msg-opaque",
+  "content": "怎么绑定账号？"
+}
+```
+
+响应类型：
+
+```http
+Content-Type: text/event-stream
+Cache-Control: no-cache
+X-Accel-Buffering: no
+```
+
+SSE `meta`：
+
+```text
+event: meta
+data: {"conversationId":"aic_opaque","userMessageId":"aim_user","assistantMessageId":"aim_assistant","quota":{}}
+```
+
+SSE `delta`：
+
+```text
+event: delta
+data: {"content":"你好"}
+```
+
+SSE `status`：
+
+```text
+event: status
+data: {"status":"searching_knowledge"}
+```
+
+`status` 可选值：
+
+- `thinking`：后端已进入 AI 生成准备阶段。
+- `searching_knowledge`：后端正在执行受控知识库检索。
+
+SSE `sources`：
+
+```text
+event: sources
+data: [{"query":"创造权限申请","title":"服务器权限申请详细规则","category":"wiki","headingPath":"服务器权限申请详细规则","sourceUrl":"https://wiki.deuterium.cafe/zh/GetOP","score":12}]
+```
+
+规则：
+
+- `sources` 只用于 AI 私聊参考来源展示和排障；公共聊天不展示 Markdown 和来源卡片。
+- 后端可以在等待模型或查库期间发送 SSE comment heartbeat，例如 `: keep-alive`；App 必须忽略 comment，但用它保持连接活跃。
+- App 流式阶段建议先按纯文本显示；收到 `done` 后再做 Markdown 渲染。
+
+SSE `done`：
+
+```text
+event: done
+data: {"message":{},"quota":{}}
+```
+
+SSE `error`：
+
+```text
+event: error
+data: {"error":{"code":"AI_QUOTA_EXCEEDED","message":"AI 请求次数已用完。","retryAfterSeconds":300}}
+```
+
+规则：
+
+- `content` trim 后不能为空。
+- `content == "/new"` 等同新建会话，不消耗额度。
+- `clientMessageId` 是 AI 私聊发送幂等键，trim 后不能为空且最长 128 字符。后端用请求交换状态记录 `pending/streaming/completed/failed` 生命周期。
+- 同一登录用户重复提交同一 `clientMessageId` 时，后端不得重复写用户消息或重复扣额度；若已有完整回复，应返回既有回复；若仍在 `pending/streaming`，返回 `AI_PROVIDER_UNAVAILABLE` 并提示稍后刷新；若处理中状态超过后端超时窗口或已失败，提示重新发送新消息。
+- 同一用户同一时间只允许一个 AI 私聊请求处于 `pending/streaming`。新的不同 `clientMessageId` 请求遇到旧请求仍在运行时，返回 `AI_PROVIDER_UNAVAILABLE`，防止并发绕过额度和 provider 成本控制。
+- 如果客户端已收到部分 `delta` 后主动断开，后端可消耗一次额度并把该请求标记失败，用于覆盖 provider 成本。
+- 后端必须区分 provider 首个正文 `delta` 超时、连续正文 `delta` 空闲超时、HTTP 错误和 App 普通网络错误，并把 provider 状态码、首 token 延迟、总耗时、retry 次数和是否已发送 delta 写入审计。Provider keep-alive/comment 不得无限延长首个正文 delta 等待窗口或正文 delta 空闲窗口。
+- App 应按 `delta` 增量展示，并以 `done.message` 作为最终消息。
+- AI 私聊可渲染安全 Markdown；公共聊天触发的 AI 回复仍为纯文本、非流式。
+
+### 8.5 重置当前会话
+
+`POST /api/v1/ai/conversation/reset`
+
+响应：
+
+```json
+{
+  "requestId": "req_opaque",
+  "data": {
+    "conversation": {}
+  }
+}
+```
+
+### 8.6 购买 AI 套餐
+
+`POST /api/v1/ai/purchases`
+
+请求：
+
+```json
+{
+  "clientRequestId": "android-ai-purchase-opaque",
+  "planId": "plan_pro"
+}
+```
+
+响应：
+
+```json
+{
+  "requestId": "req_opaque",
+  "data": {
+    "purchase": {},
+    "quota": {}
+  }
+}
+```
+
+规则：
+
+- `clientRequestId` 是购买幂等键。
+- 同一 `clientRequestId` 重复且套餐一致返回同一购买结果。
+- 套餐购买通过插件桥扣当前玩家信用点。
+- 购买结果未知时返回 `202`，不授予权益。
+
+### 8.7 查询购买结果
+
+`GET /api/v1/ai/purchases/{purchaseId}`
+
+响应：
+
+```json
+{
+  "requestId": "req_opaque",
+  "data": {
+    "purchase": {},
+    "quota": {}
+  }
+}
+```
+
+## 9. Plugin Bridge WebSocket
+
+### 9.1 连接
 
 路径：
 
@@ -1209,7 +1487,7 @@ Authorization: Bearer <plugin-bridge-token>
 - 鉴权失败时后端拒绝连接并记录安全日志。
 - 插件桥不可用时，后端对依赖服务器能力的公开 API 返回 `PLUGIN_BRIDGE_UNAVAILABLE`。
 
-### 8.2 消息信封
+### 9.2 消息信封
 
 ```json
 {
@@ -1228,7 +1506,7 @@ Authorization: Bearer <plugin-bridge-token>
 - 请求必须有超时，超时后后端按失败处理。
 - 插件桥不提供通用远程命令执行消息。
 
-### 8.3 心跳
+### 9.3 心跳
 
 `bridge.ping`
 
@@ -1253,7 +1531,7 @@ Authorization: Bearer <plugin-bridge-token>
 }
 ```
 
-### 8.4 后端 -> 插件：投递验证码
+### 9.4 后端 -> 插件：投递验证码
 
 `type = verification.deliver.request`
 
@@ -1301,7 +1579,7 @@ Authorization: Bearer <plugin-bridge-token>
 - `identity_conflict`
 - `failed`
 
-### 8.5 后端 -> 插件：解析玩家身份
+### 9.5 后端 -> 插件：解析玩家身份
 
 `type = player.resolve.request`
 
@@ -1350,7 +1628,7 @@ Authorization: Bearer <plugin-bridge-token>
 - `identity_conflict`
 - `failed`
 
-### 8.6 后端 -> 插件：查询余额
+### 9.6 后端 -> 插件：查询余额
 
 `type = wallet.balance.request`
 
@@ -1389,7 +1667,7 @@ Authorization: Bearer <plugin-bridge-token>
 - `economy_unavailable`
 - `failed`
 
-### 8.7 后端 -> 插件：执行转账
+### 9.7 后端 -> 插件：执行转账
 
 `type = wallet.transfer.request`
 
@@ -1440,7 +1718,57 @@ Authorization: Bearer <plugin-bridge-token>
 - 插件不得接受任意命令字符串。
 - `unknown` 表示插件无法确认最终结果，后端对 App 返回结果未知并提示查账。
 
-### 8.8 插件 -> 后端：服务器公共聊天
+### 9.8 后端 -> 插件：受控扣款
+
+`type = wallet.debit.request`
+
+```json
+{
+  "type": "wallet.debit.request",
+  "messageId": "bridge_msg_debit_01",
+  "sentAt": "2026-06-15T12:00:00Z",
+  "payload": {
+    "debitId": "aip_opaque",
+    "idempotencyKey": "android-ai-purchase-opaque",
+    "serverUuid": "player-server-uuid",
+    "amount": "500.00",
+    "currency": "CREDIT",
+    "note": "购买 AI Pro"
+  }
+}
+```
+
+响应 `wallet.debit.result`：
+
+```json
+{
+  "type": "wallet.debit.result",
+  "messageId": "bridge_msg_debit_02",
+  "replyTo": "bridge_msg_debit_01",
+  "sentAt": "2026-06-15T12:00:02Z",
+  "payload": {
+    "status": "success",
+    "reason": null,
+    "balanceAfter": "1200.00"
+  }
+}
+```
+
+`status`：
+
+- `success`
+- `balance_insufficient`
+- `player_not_found`
+- `economy_unavailable`
+- `failed`
+- `unknown`
+
+规则：
+
+- 该能力只允许扣当前指定玩家信用点，不允许执行任意命令。
+- `unknown` 时后端不得授予 AI 套餐权益。
+
+### 9.9 插件 -> 后端：服务器公共聊天
 
 `type = chat.serverMessage.event`
 
@@ -1464,7 +1792,7 @@ Authorization: Bearer <plugin-bridge-token>
 - 插件上报服务器侧身份，后端负责转换成 App 可展示的 `PlayerSummary`。
 - 后端可记录最近公共聊天，用于 App 进入聊天页时加载最近 100 条。
 
-### 8.9 插件 -> 后端：服务器事件提示
+### 9.10 插件 -> 后端：服务器事件提示
 
 `type = server.event`
 
@@ -1488,7 +1816,7 @@ Authorization: Bearer <plugin-bridge-token>
 - 第一版白名单建议：`death`、`server_say`、`join`、`quit`。
 - App 默认不展示服务器事件提示，用户开启后才展示。
 
-### 8.9.1 插件 -> 后端：服务器 Pay 流水事件
+### 9.10.1 插件 -> 后端：服务器 Pay 流水事件
 
 `type = wallet.pay.event`
 
@@ -1521,7 +1849,7 @@ Authorization: Bearer <plugin-bridge-token>
 - 同一 `payEventId` 重复上报不得产生重复流水。
 - 若付款方或收款方未注册 App，只给已注册一方写可见流水。
 
-### 8.9.2 插件 -> 后端：服务器经济余额变化事件
+### 9.10.2 插件 -> 后端：服务器经济余额变化事件
 
 `type = wallet.balanceChange.event`
 
@@ -1554,7 +1882,7 @@ Authorization: Bearer <plugin-bridge-token>
 - 同一 `eventId` 重复上报不得产生重复流水。
 - 如果后续插件能明确识别来源，可把 `source` 和 `note` 设置为更具体的来源，例如 `chest_shop` / `箱子商店`。
 
-### 8.10 后端 -> 插件：转发 App 公共聊天
+### 9.11 后端 -> 插件：转发 App 公共聊天
 
 `type = chat.appMessage.request`
 
@@ -1599,7 +1927,7 @@ Authorization: Bearer <plugin-bridge-token>
 - 服务器内广播格式固定为 `§x§b§1§f§7§f§f%player% §7: §f%message%`。
 - 插件不得允许后端传入任意伪造身份；如果 `senderServerUuid` 无法匹配已绑定身份或当前服务器身份，应返回失败。
 
-### 8.11 后端 -> 插件：在线玩家列表
+### 9.12 后端 -> 插件：在线玩家列表
 
 `type = presence.list.request`
 
@@ -1633,7 +1961,7 @@ Authorization: Bearer <plugin-bridge-token>
 }
 ```
 
-### 8.12 插件 -> 后端：在线状态快照
+### 9.13 插件 -> 后端：在线状态快照
 
 `type = presence.snapshot.event`
 
@@ -1659,7 +1987,7 @@ Authorization: Bearer <plugin-bridge-token>
 - 插件可以在连接建立后或在线状态变化时上报快照。
 - 后端可以用快照更新 App Chat WebSocket 的 `presence.update`。
 
-## 9. 安全与实现边界
+## 10. 安全与实现边界
 
 - App 只连接后端 API 和 App Chat WebSocket。
 - App 不连接数据库。
@@ -1672,7 +2000,7 @@ Authorization: Bearer <plugin-bridge-token>
 - 第一版不排队钱包转账和 App 聊天消息。
 - 新增玩家目录、关心和钱包流水推送必须兼容旧接口；旧 App 不更新也不应受影响。
 
-## 10. 覆盖检查
+## 11. 覆盖检查
 
 账号产品级操作覆盖：
 

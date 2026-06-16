@@ -31,3 +31,15 @@ data class ChatSendPayload(
     val content: String,
     val mentionedPlayerRefs: List<String> = emptyList(),
 )
+
+@Serializable
+data class AiChatStreamRequest(
+    val clientMessageId: String,
+    val content: String,
+)
+
+@Serializable
+data class AiPurchaseRequest(
+    val clientRequestId: String,
+    val planId: String,
+)

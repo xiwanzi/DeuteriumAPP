@@ -9,21 +9,32 @@ import org.java_websocket.handshake.ServerHandshake;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class BridgeClient {
+    private static final int MAX_DEBIT_RESULT_CACHE_SIZE = 8192;
+
     private final DeuteriumBridgePlugin plugin;
     private final URI uri;
     private final String token;
     private final int reconnectSeconds;
     private final AtomicBoolean shutdown = new AtomicBoolean(false);
+    private final Map<String, JSONObject> debitResultsByIdempotencyKey = new ConcurrentHashMap<>();
+    private final Object debitLock = new Object();
+    private final File debitResultCacheFile;
     private volatile Client client;
 
     public BridgeClient(DeuteriumBridgePlugin plugin, URI uri, String token, int reconnectSeconds) {
@@ -31,6 +42,8 @@ public final class BridgeClient {
         this.uri = uri;
         this.token = token;
         this.reconnectSeconds = reconnectSeconds;
+        this.debitResultCacheFile = new File(plugin.getDataFolder(), "wallet-debit-results.json");
+        loadDebitResults();
     }
 
     public void start() {
@@ -242,6 +255,7 @@ public final class BridgeClient {
             case "player.resolve.request" -> handleResolve(messageId, payload);
             case "wallet.balance.request" -> handleBalance(messageId, payload);
             case "wallet.transfer.request" -> handleTransfer(messageId, payload);
+            case "wallet.debit.request" -> handleDebit(messageId, payload);
             case "chat.appMessage.request" -> handleAppChat(messageId, payload);
             case "presence.list.request" -> handlePresenceList(messageId);
             default -> plugin.getLogger().warning("Unknown bridge request type: " + type);
@@ -347,14 +361,173 @@ public final class BridgeClient {
         sendResult("wallet.transfer.result", replyTo, new JSONObject().put("status", "success"));
     }
 
+    private void handleDebit(String replyTo, JSONObject payload) {
+        String idempotencyKey = payload.optString("idempotencyKey", payload.optString("debitId", ""));
+        double amount = payload.optDouble("amount", -1);
+        synchronized (debitLock) {
+            JSONObject cached = cachedDebitResult(idempotencyKey, payload, amount);
+            if (cached != null) {
+                sendResult("wallet.debit.result", replyTo, cached);
+                return;
+            }
+            JSONObject result;
+            if (!plugin.walletAvailable()) {
+                result = new JSONObject().put("status", "economy_unavailable");
+                sendResult("wallet.debit.result", replyTo, result);
+                return;
+            }
+            OfflinePlayer player = offlineByUuid(payload.optString("serverUuid"));
+            if (player == null || !plugin.economy().hasAccount(player)) {
+                result = new JSONObject().put("status", "player_not_found");
+                sendResult("wallet.debit.result", replyTo, result);
+                return;
+            }
+            if (amount <= 0) {
+                result = new JSONObject().put("status", "failed").put("reason", "invalid_amount");
+                rememberDebitResult(idempotencyKey, debitResultWithMetadata(result, payload, amount));
+                sendResult("wallet.debit.result", replyTo, result);
+                return;
+            }
+            if (plugin.economy().getBalance(player) + 0.000001 < amount) {
+                result = new JSONObject().put("status", "balance_insufficient");
+                rememberDebitResult(idempotencyKey, debitResultWithMetadata(result, payload, amount));
+                sendResult("wallet.debit.result", replyTo, result);
+                return;
+            }
+            EconomyResponse withdraw = plugin.economy().withdrawPlayer(player, amount);
+            if (!withdraw.transactionSuccess()) {
+                result = new JSONObject().put("status", "failed").put("reason", withdraw.errorMessage);
+                rememberDebitResult(idempotencyKey, debitResultWithMetadata(result, payload, amount));
+                sendResult("wallet.debit.result", replyTo, result);
+                return;
+            }
+            double balanceAfter = plugin.economy().getBalance(player);
+            plugin.rememberWalletBalance(player, balanceAfter);
+            result = new JSONObject()
+                .put("status", "success")
+                .put("balanceAfter", money(balanceAfter));
+            rememberDebitResult(idempotencyKey, debitResultWithMetadata(result, payload, amount));
+            sendResult("wallet.debit.result", replyTo, result);
+        }
+    }
+
+    private JSONObject cachedDebitResult(String idempotencyKey, JSONObject payload, double amount) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return null;
+        }
+        JSONObject cached = debitResultsByIdempotencyKey.get(idempotencyKey);
+        if (cached == null) {
+            return null;
+        }
+        if (!cachedDebitResultMatches(cached, payload, amount)) {
+            return new JSONObject().put("status", "failed").put("reason", "idempotency_mismatch");
+        }
+        return publicDebitResult(cached);
+    }
+
+    private boolean cachedDebitResultMatches(JSONObject cached, JSONObject payload, double amount) {
+        String cachedServerUuid = cached.optString("serverUuid", "");
+        if (!cachedServerUuid.isBlank() && !cachedServerUuid.equals(payload.optString("serverUuid", ""))) {
+            return false;
+        }
+        if (cached.has("amount")) {
+            return Math.abs(cached.optDouble("amount", Double.NaN) - amount) < 0.000001;
+        }
+        return true;
+    }
+
+    private JSONObject publicDebitResult(JSONObject cached) {
+        JSONObject result = new JSONObject()
+            .put("status", cached.optString("status", "failed"));
+        if (cached.has("reason")) {
+            result.put("reason", cached.optString("reason"));
+        }
+        if (cached.has("balanceAfter")) {
+            result.put("balanceAfter", cached.opt("balanceAfter"));
+        }
+        return result;
+    }
+
+    private void rememberDebitResult(String idempotencyKey, JSONObject result) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return;
+        }
+        String status = result.optString("status", "");
+        if (!"success".equals(status) && !"balance_insufficient".equals(status) && !"failed".equals(status)) {
+            return;
+        }
+        debitResultsByIdempotencyKey.putIfAbsent(idempotencyKey, new JSONObject(result.toString()));
+        while (debitResultsByIdempotencyKey.size() > MAX_DEBIT_RESULT_CACHE_SIZE) {
+            String firstKey = debitResultsByIdempotencyKey.keySet().iterator().next();
+            debitResultsByIdempotencyKey.remove(firstKey);
+        }
+        persistDebitResults();
+    }
+
+    private JSONObject debitResultWithMetadata(JSONObject result, JSONObject payload, double amount) {
+        return new JSONObject(result.toString())
+            .put("debitId", payload.optString("debitId", ""))
+            .put("idempotencyKey", payload.optString("idempotencyKey", payload.optString("debitId", "")))
+            .put("serverUuid", payload.optString("serverUuid", ""))
+            .put("amount", amount)
+            .put("createdAt", Instant.now().toString());
+    }
+
+    private void loadDebitResults() {
+        if (!debitResultCacheFile.isFile()) {
+            return;
+        }
+        try {
+            JSONObject root = new JSONObject(Files.readString(debitResultCacheFile.toPath(), StandardCharsets.UTF_8));
+            for (String key : root.keySet()) {
+                JSONObject value = root.optJSONObject(key);
+                if (value != null && debitResultsByIdempotencyKey.size() < MAX_DEBIT_RESULT_CACHE_SIZE) {
+                    debitResultsByIdempotencyKey.put(key, new JSONObject(value.toString()));
+                }
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("Failed to read wallet debit idempotency cache: " + e.getMessage());
+        }
+    }
+
+    private void persistDebitResults() {
+        try {
+            File parent = debitResultCacheFile.getParentFile();
+            if (parent != null && !parent.isDirectory()) {
+                parent.mkdirs();
+            }
+            JSONObject root = new JSONObject();
+            for (Map.Entry<String, JSONObject> entry : debitResultsByIdempotencyKey.entrySet()) {
+                root.put(entry.getKey(), entry.getValue());
+            }
+            File tempFile = new File(parent == null ? plugin.getDataFolder() : parent, debitResultCacheFile.getName() + ".tmp");
+            Files.writeString(tempFile.toPath(), root.toString(), StandardCharsets.UTF_8);
+            try {
+                Files.move(
+                    tempFile.toPath(),
+                    debitResultCacheFile.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE
+                );
+            } catch (IOException atomicMoveFailure) {
+                Files.move(tempFile.toPath(), debitResultCacheFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (IOException e) {
+            plugin.getLogger().warning("Failed to write wallet debit idempotency cache: " + e.getMessage());
+        }
+    }
+
     private void handleAppChat(String replyTo, JSONObject payload) {
         String senderUuid = payload.optString("senderServerUuid");
         String senderGameId = payload.optString("senderGameId");
         String content = payload.optString("content");
-        OfflinePlayer sender = offlineByUuid(senderUuid);
-        if (sender == null || (!sender.hasPlayedBefore() && plugin.findOnlinePlayerExact(senderGameId).isEmpty())) {
-            sendResult("chat.appMessage.result", replyTo, new JSONObject().put("status", "sender_not_found"));
-            return;
+        boolean allowVirtualSender = payload.optBoolean("allowVirtualSender", false);
+        if (!allowVirtualSender) {
+            OfflinePlayer sender = offlineByUuid(senderUuid);
+            if (sender == null || (!sender.hasPlayedBefore() && plugin.findOnlinePlayerExact(senderGameId).isEmpty())) {
+                sendResult("chat.appMessage.result", replyTo, new JSONObject().put("status", "sender_not_found"));
+                return;
+            }
         }
         String formatted = plugin.chatBroadcastFormat()
             .replace("%player%", senderGameId)

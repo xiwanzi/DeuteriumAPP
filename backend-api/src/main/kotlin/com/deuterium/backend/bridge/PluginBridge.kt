@@ -16,6 +16,7 @@ interface PluginBridge {
     suspend fun resolvePlayer(gameId: String, purpose: String): PlayerResolution
     suspend fun walletBalance(serverUuid: String): WalletBalanceResult
     suspend fun walletTransfer(request: WalletTransferRequest): WalletTransferResult
+    suspend fun walletDebit(request: WalletDebitRequest): WalletDebitResult
     suspend fun sendAppChat(request: AppChatRequest): AppChatResult
     suspend fun presenceList(): PresenceListResult
 }
@@ -52,11 +53,27 @@ data class WalletTransferRequest(
 
 data class WalletTransferResult(val status: String, val reason: String?)
 
+data class WalletDebitRequest(
+    val debitId: String,
+    val idempotencyKey: String,
+    val serverUuid: String,
+    val amount: BigDecimal,
+    val currency: String,
+    val note: String?,
+)
+
+data class WalletDebitResult(
+    val status: String,
+    val reason: String?,
+    val balanceAfter: BigDecimal?,
+)
+
 data class AppChatRequest(
     val appMessageId: String,
     val senderServerUuid: String,
     val senderGameId: String,
     val content: String,
+    val allowVirtualSender: Boolean = false,
 )
 
 data class AppChatResult(val status: String)

@@ -26,6 +26,14 @@ object Ids {
     }
     fun messageId(): String = "msg_" + shortToken()
     fun eventId(): String = "evt_" + shortToken()
+    fun aiConversationId(): String = "aic_" + shortToken()
+    fun aiMessageId(): String = "aim_" + shortToken()
+    fun aiPurchaseId(): String = "aip_" + shortToken()
+    fun aiAuditId(): String = "aia_" + shortToken()
+    fun aiRequestExchangeId(): String = "aix_" + shortToken()
+    fun aiMemoryId(): String = "aimem_" + shortToken()
+    fun aiKnowledgeId(): String = "aik_" + shortToken()
+    fun aiPromptId(): String = "aiprompt_" + shortToken()
     fun bridgeMessageId(): String = "bridge_msg_" + shortToken()
     fun token(prefix: String): String = prefix + "_" + longToken()
 

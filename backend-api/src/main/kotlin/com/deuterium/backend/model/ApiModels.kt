@@ -203,6 +203,80 @@ data class PlayerFollowData(val followed: Boolean, val player: PlayerDirectoryIt
 data class FollowedPlayersData(val players: List<PlayerDirectoryItem>)
 
 @Serializable
+data class AiQuota(
+    val used: Int,
+    val limit: Int,
+    val remaining: Int,
+    val windowHours: Int,
+    val resetsAt: String,
+)
+
+@Serializable
+data class AiPlan(
+    val planId: String,
+    val code: String,
+    val name: String,
+    val description: String,
+    val price: String,
+    val currency: String,
+    val quotaPerWindow: Int,
+    val windowHours: Int,
+    val durationDays: Int,
+    val modelTier: String,
+    val active: Boolean,
+)
+
+@Serializable
+data class AiConversationState(
+    val conversationId: String,
+    val active: Boolean,
+    val startedAt: String,
+    val updatedAt: String,
+)
+
+@Serializable
+data class AiMeData(
+    val assistantName: String,
+    val plan: AiPlan,
+    val quota: AiQuota,
+    val conversation: AiConversationState,
+)
+
+@Serializable
+data class AiPlansData(val plans: List<AiPlan>)
+
+@Serializable
+data class AiMessage(
+    val messageId: String,
+    val conversationId: String,
+    val role: String,
+    val content: String,
+    val createdAt: String,
+)
+
+@Serializable
+data class AiMessagesData(val messages: List<AiMessage>)
+
+@Serializable
+data class AiConversationResetData(val conversation: AiConversationState)
+
+@Serializable
+data class AiPurchase(
+    val purchaseId: String,
+    val clientRequestId: String,
+    val plan: AiPlan,
+    val amount: String,
+    val currency: String,
+    val status: String,
+    val failureCode: String? = null,
+    val createdAt: String,
+    val updatedAt: String,
+)
+
+@Serializable
+data class AiPurchaseData(val purchase: AiPurchase, val quota: AiQuota? = null)
+
+@Serializable
 data class LiveHealthData(val alive: Boolean)
 
 @Serializable

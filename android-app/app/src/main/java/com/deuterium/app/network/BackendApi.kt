@@ -2,6 +2,13 @@ package com.deuterium.app.network
 
 import com.deuterium.app.data.ApiResponse
 import com.deuterium.app.data.AppUpdateCheckData
+import com.deuterium.app.data.AiConversationResetData
+import com.deuterium.app.data.AiConversationResetRequest
+import com.deuterium.app.data.AiMeData
+import com.deuterium.app.data.AiMessagesData
+import com.deuterium.app.data.AiPlansData
+import com.deuterium.app.data.AiPurchaseData
+import com.deuterium.app.data.AiPurchaseRequest
 import com.deuterium.app.data.AuthData
 import com.deuterium.app.data.ChatMessagesData
 import com.deuterium.app.data.CreateTransferRequest
@@ -107,4 +114,27 @@ interface BackendApi {
 
     @DELETE("chat/follows/{playerRef}")
     suspend fun unfollowPlayer(@Path("playerRef") playerRef: String): Response<ApiResponse<PlayerFollowData>>
+
+    @GET("ai/me")
+    suspend fun aiMe(): Response<ApiResponse<AiMeData>>
+
+    @GET("ai/plans")
+    suspend fun aiPlans(): Response<ApiResponse<AiPlansData>>
+
+    @GET("ai/messages")
+    suspend fun aiMessages(
+        @Query("limit") limit: Int = 50,
+        @Query("before") before: String? = null
+    ): Response<ApiResponse<AiMessagesData>>
+
+    @POST("ai/conversation/reset")
+    suspend fun resetAiConversation(
+        @Body body: AiConversationResetRequest = AiConversationResetRequest()
+    ): Response<ApiResponse<AiConversationResetData>>
+
+    @POST("ai/purchases")
+    suspend fun createAiPurchase(@Body body: AiPurchaseRequest): Response<ApiResponse<AiPurchaseData>>
+
+    @GET("ai/purchases/{purchaseId}")
+    suspend fun aiPurchase(@Path("purchaseId") purchaseId: String): Response<ApiResponse<AiPurchaseData>>
 }

@@ -49,6 +49,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 private const val PlayerDirectoryRefreshMinIntervalMillis = 1_500L
 
+data class PendingAiPurchaseRef(
+    val clientRequestId: String,
+    val purchaseId: String? = null
+)
+
 interface SessionStore {
     fun loadToken(): String?
     fun loadUser(): UserProfile?
@@ -57,6 +62,9 @@ interface SessionStore {
     fun clearSession()
     fun loadLastWalletRecordId(userId: String): String? = null
     fun saveLastWalletRecordId(userId: String, recordId: String) = Unit
+    fun loadPendingAiPurchase(userId: String, planId: String): PendingAiPurchaseRef? = null
+    fun savePendingAiPurchase(userId: String, planId: String, pending: PendingAiPurchaseRef) = Unit
+    fun clearPendingAiPurchase(userId: String, planId: String) = Unit
 }
 
 class AuthRepository(
@@ -314,6 +322,7 @@ class ChatRepository(
     private var includeEvents = false
     private var shouldReconnect = false
     private val knownMessageIds = LinkedHashSet<String>()
+    private val pendingClientMessages = LinkedHashSet<String>()
     private var playerDirectoryRefreshPending = false
     private var lastPlayerDirectoryRefreshAt = 0L
 
@@ -498,9 +507,10 @@ class ChatRepository(
         val socket = webSocket ?: return RepoResult.Error("聊天连接暂不可用，请稍后再试。")
         val requestId = "req_ws_${UUID.randomUUID()}"
         val clientMessageId = "android-msg-${UUID.randomUUID()}"
+        val trimmed = content.trim()
         val payload = linkedMapOf<String, Any>(
             "clientMessageId" to clientMessageId,
-            "content" to content.trim()
+            "content" to trimmed
         )
         val mentions = mentionedPlayerRefs.filter { it.isNotBlank() }.distinct().take(20)
         if (mentions.isNotEmpty()) payload["mentionedPlayerRefs"] = mentions
@@ -512,6 +522,7 @@ class ChatRepository(
         )
         return if (socket.send(gson.toJson(body))) {
             connectionMessage = null
+            appendPendingMessage(clientMessageId, trimmed)
             RepoResult.Success(Unit)
         } else {
             RepoResult.Error("消息发送失败，聊天连接暂不可用。")
@@ -625,7 +636,11 @@ class ChatRepository(
             }
             "chat.send.result" -> {
                 val payload = envelope.getAsJsonObject("payload") ?: return
-                if (payload.get("status")?.asString == "failed") {
+                val clientMessageId = payload.get("clientMessageId")?.asString.orEmpty()
+                if (payload.get("status")?.asString == "accepted") {
+                    confirmPendingMessage(clientMessageId, payload.get("messageId")?.asString.orEmpty())
+                } else if (payload.get("status")?.asString == "failed") {
+                    removePendingMessage(clientMessageId)
                     val error = payload.getAsJsonObject("error")
                     connectionMessage = error?.get("message")?.asString ?: "消息发送失败，请稍后再试。"
                 }
@@ -731,6 +746,56 @@ class ChatRepository(
         }
         val inserted = mergeIncomingMessages(listOf(item))
         inserted.forEach(::saveHistory)
+    }
+
+    private fun appendPendingMessage(clientMessageId: String, content: String) {
+        val user = sessionStore.loadUser() ?: return
+        if (knownMessageIds.contains(clientMessageId)) return
+        val now = Instant.now().toString()
+        val item = ChatFeedItem(
+            id = clientMessageId,
+            sender = user.gameId,
+            senderPlayerRef = user.playerRef,
+            content = content,
+            time = formatTime(now),
+            mine = true,
+            sentAt = now,
+            kind = "public_chat"
+        )
+        pendingClientMessages.add(clientMessageId)
+        if (!appendLiveFeedItemFast(item)) {
+            mergeIncomingMessages(listOf(item))
+        }
+    }
+
+    private fun confirmPendingMessage(clientMessageId: String, messageId: String) {
+        if (clientMessageId.isBlank()) return
+        pendingClientMessages.remove(clientMessageId)
+        if (messageId.isBlank() || messageId == clientMessageId) return
+        val pendingIndex = messages.indexOfFirst { it.id == clientMessageId }
+        val officialIndex = messages.indexOfFirst { it.id == messageId }
+        when {
+            pendingIndex >= 0 && officialIndex >= 0 -> {
+                messages.removeAt(pendingIndex)
+                knownMessageIds.remove(clientMessageId)
+            }
+            pendingIndex >= 0 -> {
+                messages[pendingIndex] = messages[pendingIndex].copy(id = messageId)
+                knownMessageIds.remove(clientMessageId)
+                knownMessageIds.add(messageId)
+                saveHistory(messages[pendingIndex])
+            }
+        }
+    }
+
+    private fun removePendingMessage(clientMessageId: String) {
+        if (clientMessageId.isBlank()) return
+        pendingClientMessages.remove(clientMessageId)
+        val index = messages.indexOfFirst { it.id == clientMessageId }
+        if (index >= 0) {
+            messages.removeAt(index)
+            knownMessageIds.remove(clientMessageId)
+        }
     }
 
     private fun appendLiveFeedItemFast(item: ChatFeedItem): Boolean {

@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 
 package com.deuterium.app
 
@@ -33,6 +33,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -136,17 +137,23 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -160,15 +167,23 @@ import com.deuterium.app.data.ResolvedPlayerRef
 import com.deuterium.app.data.UserProfile
 import com.deuterium.app.data.WalletRecord
 import com.deuterium.app.network.ApiClient
+import com.deuterium.app.data.AiPlan
 import com.deuterium.app.repository.AppUpdateRepository
 import com.deuterium.app.repository.AuthRepository
+import com.deuterium.app.repository.AiRepository
+import com.deuterium.app.repository.AiUiMessage
 import com.deuterium.app.repository.ChatHistoryStore
 import com.deuterium.app.repository.ChatRepository
+import com.deuterium.app.repository.PendingAiPurchaseRef
 import com.deuterium.app.repository.SessionStore
 import com.deuterium.app.repository.WalletRepository
+import com.deuterium.app.repository.durationLabel
 import com.deuterium.app.repository.formatIsoDateTimeUtc8
 import com.deuterium.app.repository.playerSummary
+import com.deuterium.app.repository.priceLabel
+import com.deuterium.app.repository.quotaLabel
 import com.deuterium.app.repository.validateAmount
+import com.deuterium.app.repository.validateAiMessage
 import com.deuterium.app.repository.validateChatMessage
 import com.deuterium.app.ui.theme.DeuteriumColorPreset
 import com.deuterium.app.ui.theme.DeuteriumTheme
@@ -336,7 +351,32 @@ private class AppPreferences(context: Context) : SessionStore {
         prefs.edit().putString(walletRecordKey(userId), recordId).apply()
     }
 
+    override fun loadPendingAiPurchase(userId: String, planId: String): PendingAiPurchaseRef? {
+        val clientRequestId = prefs.getString(aiPurchaseKey(userId, planId, "client"), null)
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        val purchaseId = prefs.getString(aiPurchaseKey(userId, planId, "purchase"), null)
+            ?.takeIf { it.isNotBlank() }
+        return PendingAiPurchaseRef(clientRequestId, purchaseId)
+    }
+
+    override fun savePendingAiPurchase(userId: String, planId: String, pending: PendingAiPurchaseRef) {
+        prefs.edit()
+            .putString(aiPurchaseKey(userId, planId, "client"), pending.clientRequestId)
+            .putString(aiPurchaseKey(userId, planId, "purchase"), pending.purchaseId.orEmpty())
+            .apply()
+    }
+
+    override fun clearPendingAiPurchase(userId: String, planId: String) {
+        prefs.edit()
+            .remove(aiPurchaseKey(userId, planId, "client"))
+            .remove(aiPurchaseKey(userId, planId, "purchase"))
+            .apply()
+    }
+
     private fun walletRecordKey(userId: String): String = "$KEY_LAST_WALLET_RECORD_ID_PREFIX$userId"
+    private fun aiPurchaseKey(userId: String, planId: String, suffix: String): String =
+        "$KEY_PENDING_AI_PURCHASE_PREFIX${userId}_${planId}_$suffix"
 
     private companion object {
         const val PREFS_NAME = "deuterium_app_preferences"
@@ -352,6 +392,7 @@ private class AppPreferences(context: Context) : SessionStore {
         const val KEY_USER_QQ = "user_qq"
         const val KEY_USER_IDENTITY_STATUS = "user_identity_status"
         const val KEY_LAST_WALLET_RECORD_ID_PREFIX = "last_wallet_record_id_"
+        const val KEY_PENDING_AI_PURCHASE_PREFIX = "pending_ai_purchase_"
     }
 }
 
@@ -367,7 +408,7 @@ private data class MentionSelection(
 )
 
 private enum class AuthMode { Login, Register, ResetPassword }
-private enum class MainSection { Wallet, Transfer, Chat, Profile }
+private enum class MainSection { Wallet, Transfer, Chat, Ai, Profile }
 private enum class TransferFeedbackPhase { Idle, Loading, Success, Notice, Error }
 
 private object AppShapes {
@@ -393,8 +434,9 @@ private object AppMotion {
 private fun MainSection.motionOrder(): Int = when (this) {
     MainSection.Wallet -> 0
     MainSection.Chat -> 1
-    MainSection.Profile -> 2
-    MainSection.Transfer -> 3
+    MainSection.Ai -> 2
+    MainSection.Profile -> 3
+    MainSection.Transfer -> 4
 }
 
 private fun chatMatchesQuery(item: ChatFeedItem, query: String): Boolean {
@@ -420,6 +462,15 @@ private fun compactChatSnippet(text: String, maxChars: Int): String {
 private fun playerInitial(gameId: String): String =
     gameId.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?"
 
+@Composable
+private fun XiaoxiangAvatar(modifier: Modifier = Modifier) {
+    Image(
+        painter = painterResource(id = R.drawable.xiaoxiang_avatar),
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        modifier = modifier.clip(CircleShape)
+    )
+}
 
 @Composable
 private fun DeuteriumApp(
@@ -458,6 +509,13 @@ private fun DeuteriumApp(
             }
         )
     }
+    val aiRepository = remember {
+        AiRepository(
+            apiClient = apiClient,
+            sessionStore = preferences,
+            onUnauthorized = { user = null }
+        )
+    }
 
     LaunchedEffect(Unit) {
         if (!preferences.loadToken().isNullOrBlank()) {
@@ -475,6 +533,7 @@ private fun DeuteriumApp(
             walletRepository.syncNewRecords()
         } else {
             chatRepository.disconnect()
+            aiRepository.clearLocal()
         }
     }
 
@@ -528,6 +587,7 @@ private fun DeuteriumApp(
                     authRepository = authRepository,
                     walletRepository = walletRepository,
                     chatRepository = chatRepository,
+                    aiRepository = aiRepository,
                     appUpdateRepository = appUpdateRepository,
                     appearance = appearance,
                     onThemeModeChange = onThemeModeChange,
@@ -546,6 +606,7 @@ private fun DeuteriumApp(
                     },
                     onLogout = {
                         chatRepository.disconnect()
+                        aiRepository.clearLocal()
                         user = null
                     }
                 )
@@ -668,10 +729,12 @@ private fun AuthScreen(
                     shadowElevation = 0.dp
                 ) {
                     Text(
-                        "26063",
+                        BuildConfig.VERSION_NAME,
                         modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
                         style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -948,6 +1011,7 @@ private fun MainShell(
     authRepository: AuthRepository,
     walletRepository: WalletRepository,
     chatRepository: ChatRepository,
+    aiRepository: AiRepository,
     appUpdateRepository: AppUpdateRepository,
     appearance: AppAppearance,
     onThemeModeChange: (DeuteriumThemeMode) -> Unit,
@@ -1022,10 +1086,12 @@ private fun MainShell(
                             shadowElevation = 0.dp
                         ) {
                             Text(
-                                "26063",
+                                BuildConfig.VERSION_NAME,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                                 style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -1057,6 +1123,7 @@ private fun MainShell(
                     ) {
                         BottomItem("钱包", Icons.Filled.Home, section == MainSection.Wallet) { section = MainSection.Wallet }
                         BottomItem("聊天", Icons.Filled.Chat, section == MainSection.Chat) { section = MainSection.Chat }
+                        BottomItem("Saki", Icons.Filled.Chat, section == MainSection.Ai) { section = MainSection.Ai }
                         BottomItem("我的", Icons.Filled.Person, section == MainSection.Profile) { section = MainSection.Profile }
                     }
                 }
@@ -1120,6 +1187,7 @@ private fun MainShell(
                             section = MainSection.Transfer
                         }
                     )
+                    MainSection.Ai -> AiScreen(repository = aiRepository)
                     MainSection.Profile -> ProfileScreen(
                         user = user,
                         repository = authRepository,
@@ -2404,6 +2472,13 @@ private fun ChatScreen(
                             showMentions = false
                             message = null
                             autoDismissMessage = false
+                            onFollowLatestChange(true)
+                            onUnseenMessagesChange(0)
+                            scope.launch {
+                                if (!searchActive && displayedMessages.isNotEmpty()) {
+                                    listState.scrollToItem(displayedMessages.lastIndex)
+                                }
+                            }
                         }
                         is RepoResult.Error -> {
                             message = result.message
@@ -2508,6 +2583,656 @@ private fun ChatScreen(
             }
         )
     }
+}
+
+@Composable
+private fun AiScreen(repository: AiRepository) {
+    val scope = rememberCoroutineScope()
+    val clipboardManager = LocalClipboardManager.current
+    val listState = rememberLazyListState()
+    val density = LocalDensity.current
+    val keyboardPadding = with(density) {
+        (
+            WindowInsets.ime.getBottom(this) -
+                WindowInsets.navigationBars.getBottom(this)
+            )
+            .coerceAtLeast(0)
+            .toDp()
+    }
+    var input by remember { mutableStateOf("") }
+    var showPlans by remember { mutableStateOf(false) }
+    var localMessage by remember { mutableStateOf<String?>(null) }
+    var forceScrollToken by remember { mutableStateOf(0) }
+    val quota = repository.quota
+    val planName = repository.currentPlan?.name?.takeIf { it.isNotBlank() } ?: "免费额度"
+    val restoreTime = quota?.restoresAt ?: quota?.restoreAt ?: quota?.resetsAt ?: quota?.resetAt
+    val assistantName = repository.assistantName
+
+    LaunchedEffect(Unit) {
+        repository.loadInitial()
+    }
+
+    val nearBottom by remember {
+        derivedStateOf {
+            val layout = listState.layoutInfo
+            val total = layout.totalItemsCount
+            if (total == 0) {
+                true
+            } else {
+                (layout.visibleItemsInfo.lastOrNull()?.index ?: 0) >= total - 2
+            }
+        }
+    }
+
+    LaunchedEffect(repository.messages.size, repository.messages.lastOrNull()?.content) {
+        val last = repository.messages.lastOrNull() ?: return@LaunchedEffect
+        if (last.role == "user" || nearBottom) {
+            listState.scrollToItem(repository.messages.lastIndex)
+        }
+    }
+
+    LaunchedEffect(forceScrollToken, repository.messages.size) {
+        if (forceScrollToken > 0 && repository.messages.isNotEmpty()) {
+            listState.scrollToItem(repository.messages.lastIndex)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(bottom = keyboardPadding)
+    ) {
+        AppSurface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 64.dp)
+                .padding(horizontal = 10.dp, vertical = 4.dp)
+                .clickable(enabled = !repository.loading) {
+                    scope.launch {
+                        repository.loadPlans()
+                        showPlans = true
+                    }
+                },
+            shape = AppShapes.extraLarge
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    modifier = Modifier.size(42.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp
+                ) {
+                    XiaoxiangAvatar(Modifier.fillMaxSize())
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        assistantName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = aiQuotaLabel(planName, quota?.remaining, quota?.limit, restoreTime),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Text(
+                    if (repository.loading) "加载中" else "升级",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1
+                )
+            }
+        }
+
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            state = listState,
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (repository.messages.isEmpty()) {
+                item(key = "ai-empty", contentType = "ai-empty") {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 18.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Surface(
+                            modifier = Modifier.size(54.dp),
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            tonalElevation = 0.dp,
+                            shadowElevation = 0.dp
+                        ) {
+                            XiaoxiangAvatar(Modifier.fillMaxSize())
+                        }
+                        Text(assistantName, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "发送 /new 开启新对话",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            items(
+                items = repository.messages,
+                key = { it.id },
+                contentType = { "ai-${it.role}" }
+            ) { message ->
+                AiMessageBubble(
+                    message = message,
+                    assistantName = assistantName,
+                    onCopy = { text ->
+                        clipboardManager.setText(AnnotatedString(text))
+                        localMessage = "已复制 $assistantName 的消息。"
+                    }
+                )
+            }
+        }
+
+        InlineMessage(
+            message = localMessage ?: repository.message,
+            modifier = Modifier.padding(horizontal = 12.dp),
+            onDismiss = {
+                if (localMessage != null) {
+                    localMessage = null
+                } else {
+                    repository.clearMessage()
+                }
+            }
+        )
+        AiInputBar(
+            input = input,
+            sending = repository.sending || repository.loading,
+            assistantName = assistantName,
+            onInputChange = { input = it },
+            onSend = {
+                if (repository.sending || repository.loading) return@AiInputBar
+                val outgoing = input
+                val trimmed = outgoing.trim()
+                val localError = validateAiMessage(trimmed)
+                if (localError != null && trimmed != "/new") {
+                    localMessage = localError
+                    return@AiInputBar
+                }
+                input = ""
+                forceScrollToken += 1
+                scope.launch {
+                    repository.sendMessage(outgoing)
+                }
+            }
+        )
+    }
+
+    if (showPlans) {
+        AiPlansDialog(
+            plans = repository.plans,
+            purchasing = repository.purchasing,
+            onDismiss = { showPlans = false },
+            onRefresh = { scope.launch { repository.loadPlans() } },
+            onPurchase = { plan ->
+                scope.launch { repository.purchase(plan) }
+            }
+        )
+    }
+}
+
+@Composable
+private fun AiInputBar(
+    input: String,
+    sending: Boolean,
+    assistantName: String,
+    onInputChange: (String) -> Unit,
+    onSend: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                modifier = Modifier.weight(1f),
+                shape = AppShapes.pill,
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f),
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp
+            ) {
+                BasicTextField(
+                    value = input,
+                    onValueChange = onInputChange,
+                    enabled = true,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 44.dp, max = 120.dp)
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    maxLines = 5,
+                    decorationBox = { innerTextField ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (input.isBlank()) {
+                                Text(
+                                    "给 $assistantName 发消息",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            innerTextField()
+                        }
+                    }
+                )
+            }
+            val canSend = !sending && input.isNotBlank()
+            Surface(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clickable(enabled = canSend) { onSend() },
+                shape = CircleShape,
+                color = if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                contentColor = if (canSend) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.Send, contentDescription = if (sending) "发送中" else "发送", modifier = Modifier.size(20.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AiMessageBubble(
+    message: AiUiMessage,
+    assistantName: String,
+    onCopy: (String) -> Unit
+) {
+    val mine = message.role == "user"
+    val content = message.content.ifBlank { if (message.streaming) "正在生成..." else "" }
+    if (mine) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
+        ) {
+            Surface(
+                modifier = Modifier.widthIn(max = 340.dp),
+                color = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = 22.dp, bottomEnd = 7.dp),
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp
+            ) {
+                Text(
+                    text = content,
+                    modifier = Modifier.padding(horizontal = 15.dp, vertical = 10.dp),
+                    style = MaterialTheme.typography.bodyLarge
+                )
+            }
+        }
+        return
+    }
+    val canCopy = !message.streaming && content.isNotBlank()
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Surface(
+            modifier = Modifier.size(30.dp),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp
+        ) {
+            XiaoxiangAvatar(Modifier.fillMaxSize())
+        }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .combinedClickable(
+                    enabled = canCopy,
+                    onClick = {},
+                    onLongClick = { onCopy(content) }
+                ),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    assistantName,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    if (message.streaming) message.statusText ?: "生成中" else message.time,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (canCopy) {
+                    IconButton(
+                        modifier = Modifier.size(30.dp),
+                        onClick = { onCopy(content) }
+                    ) {
+                        Icon(Icons.Filled.ContentCopy, contentDescription = "复制 AI 消息", modifier = Modifier.size(15.dp))
+                    }
+                }
+            }
+            if (message.renderMarkdown) {
+                AiMarkdownText(content)
+            } else {
+                Text(
+                    text = content,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            if (message.sources.isNotEmpty()) {
+                Text(
+                    text = "参考：" + message.sources.take(3).joinToString(" / ") { source ->
+                        source.title?.takeIf { it.isNotBlank() } ?: "知识库"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AiMarkdownText(content: String, modifier: Modifier = Modifier) {
+    val blocks = remember(content) { parseAiMarkdown(content) }
+    val bodyColor = MaterialTheme.colorScheme.onSurface
+    val variantColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val codeBackground = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.70f)
+    val codeColor = MaterialTheme.colorScheme.onSurface
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        blocks.forEach { block ->
+            when (block) {
+                is AiMarkdownBlock.Heading -> Text(
+                    text = markdownInline(block.text, codeBackground, codeColor),
+                    style = if (block.level <= 1) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = bodyColor
+                )
+                is AiMarkdownBlock.Paragraph -> Text(
+                    text = markdownInline(block.text, codeBackground, codeColor),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = bodyColor
+                )
+                is AiMarkdownBlock.Bullet -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("•", style = MaterialTheme.typography.bodyLarge, color = variantColor)
+                    Text(
+                        text = markdownInline(block.text, codeBackground, codeColor),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = bodyColor,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                is AiMarkdownBlock.Quote -> Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .width(3.dp)
+                            .heightIn(min = 24.dp)
+                            .clip(AppShapes.pill)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
+                    )
+                    Text(
+                        text = markdownInline(block.text, codeBackground, codeColor),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = variantColor,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                is AiMarkdownBlock.Code -> Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = codeBackground,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp
+                ) {
+                    Text(
+                        text = block.text,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = codeColor,
+                        modifier = Modifier.padding(10.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+private sealed interface AiMarkdownBlock {
+    data class Heading(val level: Int, val text: String) : AiMarkdownBlock
+    data class Paragraph(val text: String) : AiMarkdownBlock
+    data class Bullet(val text: String) : AiMarkdownBlock
+    data class Quote(val text: String) : AiMarkdownBlock
+    data class Code(val text: String) : AiMarkdownBlock
+}
+
+private fun parseAiMarkdown(content: String): List<AiMarkdownBlock> {
+    if (content.isBlank()) return listOf(AiMarkdownBlock.Paragraph(""))
+    val blocks = mutableListOf<AiMarkdownBlock>()
+    val paragraph = mutableListOf<String>()
+    val code = StringBuilder()
+    var inCode = false
+
+    fun flushParagraph() {
+        if (paragraph.isEmpty()) return
+        blocks += AiMarkdownBlock.Paragraph(paragraph.joinToString("\n").trim())
+        paragraph.clear()
+    }
+
+    content.lines().forEach { raw ->
+        val line = raw.trimEnd()
+        val trimmed = line.trim()
+        if (trimmed.startsWith("```")) {
+            if (inCode) {
+                blocks += AiMarkdownBlock.Code(code.toString().trimEnd())
+                code.clear()
+                inCode = false
+            } else {
+                flushParagraph()
+                inCode = true
+            }
+            return@forEach
+        }
+        if (inCode) {
+            code.appendLine(raw)
+            return@forEach
+        }
+        if (trimmed.isBlank()) {
+            flushParagraph()
+            return@forEach
+        }
+        val heading = Regex("""^(#{1,3})\s+(.+)$""").matchEntire(trimmed)
+        if (heading != null) {
+            flushParagraph()
+            blocks += AiMarkdownBlock.Heading(heading.groupValues[1].length, heading.groupValues[2].trim())
+            return@forEach
+        }
+        val bullet = Regex("""^[-*+]\s+(.+)$""").matchEntire(trimmed)
+        if (bullet != null) {
+            flushParagraph()
+            blocks += AiMarkdownBlock.Bullet(bullet.groupValues[1].trim())
+            return@forEach
+        }
+        if (trimmed.startsWith(">")) {
+            flushParagraph()
+            blocks += AiMarkdownBlock.Quote(trimmed.removePrefix(">").trim())
+            return@forEach
+        }
+        paragraph += line
+    }
+    if (inCode && code.isNotBlank()) {
+        blocks += AiMarkdownBlock.Code(code.toString().trimEnd())
+    }
+    flushParagraph()
+    return blocks.ifEmpty { listOf(AiMarkdownBlock.Paragraph(content)) }
+}
+
+private fun markdownInline(text: String, codeBackground: Color, codeColor: Color): AnnotatedString =
+    buildAnnotatedString {
+        var index = 0
+        while (index < text.length) {
+            when {
+                text.startsWith("`", index) -> {
+                    val end = text.indexOf('`', startIndex = index + 1)
+                    if (end > index + 1) {
+                        withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = codeBackground, color = codeColor)) {
+                            append(text.substring(index + 1, end))
+                        }
+                        index = end + 1
+                    } else {
+                        append(text[index])
+                        index += 1
+                    }
+                }
+                text.startsWith("**", index) -> {
+                    val end = text.indexOf("**", startIndex = index + 2)
+                    if (end > index + 2) {
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                            append(text.substring(index + 2, end))
+                        }
+                        index = end + 2
+                    } else {
+                        append(text[index])
+                        index += 1
+                    }
+                }
+                else -> {
+                    append(text[index])
+                    index += 1
+                }
+            }
+        }
+    }
+
+@Composable
+private fun AiPlansDialog(
+    plans: List<AiPlan>,
+    purchasing: Boolean,
+    onDismiss: () -> Unit,
+    onRefresh: () -> Unit,
+    onPurchase: (AiPlan) -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 14.dp, vertical = 18.dp),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 560.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("AI 套餐", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                        IconButton(onClick = onRefresh) {
+                            Icon(Icons.Filled.Refresh, contentDescription = "刷新套餐")
+                        }
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Filled.Close, contentDescription = "关闭")
+                        }
+                    }
+                    if (plans.isEmpty()) {
+                        Text(
+                            "暂无可购买套餐。",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    plans.forEach { plan ->
+                        AppSurface(modifier = Modifier.fillMaxWidth(), shape = AppShapes.medium) {
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(plan.name.ifBlank { "AI 套餐" }, fontWeight = FontWeight.SemiBold)
+                                plan.description?.takeIf { it.isNotBlank() }?.let {
+                                    Text(
+                                        it,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    FilterChip(selected = false, onClick = {}, label = { Text(plan.priceLabel()) })
+                                    FilterChip(selected = false, onClick = {}, label = { Text(plan.durationLabel()) })
+                                    FilterChip(selected = false, onClick = {}, label = { Text(plan.quotaLabel()) })
+                                }
+                                Button(
+                                    enabled = !purchasing,
+                                    onClick = { onPurchase(plan) },
+                                    modifier = Modifier.align(Alignment.End)
+                                ) {
+                                    Text(if (purchasing) "处理中" else "购买")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun aiQuotaLabel(planName: String, remaining: Int?, limit: Int?, restoreTime: String?): String {
+    val quotaText = if (remaining != null && limit != null && limit > 0) {
+        "$remaining/$limit"
+    } else {
+        "额度加载中"
+    }
+    val restoreText = restoreTime?.takeIf { it.isNotBlank() }?.let {
+        "，恢复 ${formatIsoDateTimeUtc8(it)}"
+    }.orEmpty()
+    return "$planName · 剩余额度 $quotaText$restoreText"
 }
 
 @Composable

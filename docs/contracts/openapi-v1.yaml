@@ -20,6 +20,8 @@ tags:
     description: 信用点余额、收款方搜索、转账和基础流水。
   - name: Chat
     description: 最近公共聊天、服务器在线状态、玩家目录和关心玩家列表。
+  - name: AI
+    description: App AI 聊天、额度、套餐和购买。
 paths:
   /app/update-check:
     get:
@@ -465,6 +467,154 @@ paths:
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
+  /ai/me:
+    get:
+      tags: [AI]
+      summary: 获取当前 AI 状态
+      operationId: getAiMe
+      responses:
+        "200":
+          description: 当前套餐、额度和会话状态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiMeResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /ai/plans:
+    get:
+      tags: [AI]
+      summary: 获取可购买 AI 套餐
+      operationId: listAiPlans
+      responses:
+        "200":
+          description: 动态套餐列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiPlansResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /ai/messages:
+    get:
+      tags: [AI]
+      summary: 获取当前 AI 会话消息
+      operationId: listAiMessages
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: before
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 当前会话消息
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiMessagesResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /ai/chat/stream:
+    post:
+      tags: [AI]
+      summary: 流式发送 AI 消息
+      description: >
+        返回 text/event-stream。事件包括 meta、status、sources、delta、done、error；
+        等待模型或知识库时后端可发送 SSE comment heartbeat（例如 : keep-alive），客户端必须忽略 comment。
+        clientMessageId 是 AI 私聊发送幂等键，后端记录 pending/streaming/completed/failed；
+        重复提交不得重复扣额度，completed 复放既有回复，pending/streaming 提示稍后刷新。
+        同一用户同一时间只允许一个 pending/streaming 请求。后端会审计 provider 状态码、首个正文 delta 延迟、总耗时、retry 次数和是否已发送 delta。
+      operationId: streamAiChat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AiChatStreamRequest"
+      responses:
+        "200":
+          description: SSE meta/status/sources/delta/done/error 事件流
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        default:
+          $ref: "#/components/responses/Error"
+  /ai/conversation/reset:
+    post:
+      tags: [AI]
+      summary: 重置当前 AI 会话
+      operationId: resetAiConversation
+      responses:
+        "200":
+          description: 新会话状态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiConversationResetResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /ai/purchases:
+    post:
+      tags: [AI]
+      summary: 购买 AI 套餐
+      operationId: createAiPurchase
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AiPurchaseRequest"
+      responses:
+        "200":
+          description: 购买成功或已有结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiPurchaseResponse"
+        "202":
+          description: 购买结果未知或处理中
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiPurchaseResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /ai/purchases/{purchaseId}:
+    get:
+      tags: [AI]
+      summary: 查询 AI 套餐购买结果
+      operationId: getAiPurchase
+      parameters:
+        - name: purchaseId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 购买记录
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiPurchaseResponse"
+        "202":
+          description: 购买结果未知或处理中
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiPurchaseResponse"
+        default:
+          $ref: "#/components/responses/Error"
 components:
   securitySchemes:
     bearerAuth:
@@ -585,6 +735,17 @@ components:
             - CHAT_MESSAGE_TOO_LONG
             - CHAT_SEND_FAILED
             - SENDER_IDENTITY_UNCONFIRMED
+            - AI_DISABLED
+            - AI_MESSAGE_EMPTY
+            - AI_MESSAGE_TOO_LONG
+            - AI_QUOTA_EXCEEDED
+            - AI_PROVIDER_UNAVAILABLE
+            - AI_PROVIDER_TIMEOUT
+            - AI_PROMPT_RISK_BLOCKED
+            - AI_PLAN_NOT_FOUND
+            - AI_PURCHASE_DUPLICATE
+            - AI_PURCHASE_FAILED
+            - AI_PURCHASE_RESULT_UNKNOWN
         message:
           type: string
         details:
@@ -1124,3 +1285,217 @@ components:
           properties:
             data:
               $ref: "#/components/schemas/FollowedPlayersData"
+    AiQuota:
+      type: object
+      required: [used, limit, remaining, windowHours, resetsAt]
+      properties:
+        used:
+          type: integer
+          minimum: 0
+        limit:
+          type: integer
+          minimum: 0
+        remaining:
+          type: integer
+          minimum: 0
+        windowHours:
+          type: integer
+          minimum: 1
+        resetsAt:
+          type: string
+          format: date-time
+    AiPlan:
+      type: object
+      required: [planId, code, name, description, price, currency, quotaPerWindow, windowHours, durationDays, modelTier, active]
+      properties:
+        planId:
+          type: string
+        code:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        price:
+          type: string
+          pattern: "^\\d+(\\.\\d{1,2})?$"
+        currency:
+          type: string
+          enum: [CREDIT]
+        quotaPerWindow:
+          type: integer
+          minimum: 0
+        windowHours:
+          type: integer
+          minimum: 1
+        durationDays:
+          type: integer
+          minimum: 0
+        modelTier:
+          type: string
+        active:
+          type: boolean
+    AiConversationState:
+      type: object
+      required: [conversationId, active, startedAt, updatedAt]
+      properties:
+        conversationId:
+          type: string
+        active:
+          type: boolean
+        startedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    AiMessage:
+      type: object
+      required: [messageId, conversationId, role, content, createdAt]
+      properties:
+        messageId:
+          type: string
+        conversationId:
+          type: string
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    AiMeData:
+      type: object
+      required: [assistantName, plan, quota, conversation]
+      properties:
+        assistantName:
+          type: string
+        plan:
+          $ref: "#/components/schemas/AiPlan"
+        quota:
+          $ref: "#/components/schemas/AiQuota"
+        conversation:
+          $ref: "#/components/schemas/AiConversationState"
+    AiMeResponse:
+      allOf:
+        - $ref: "#/components/schemas/ApiResponseBase"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/AiMeData"
+    AiPlansData:
+      type: object
+      required: [plans]
+      properties:
+        plans:
+          type: array
+          items:
+            $ref: "#/components/schemas/AiPlan"
+    AiPlansResponse:
+      allOf:
+        - $ref: "#/components/schemas/ApiResponseBase"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/AiPlansData"
+    AiMessagesData:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/AiMessage"
+    AiMessagesResponse:
+      allOf:
+        - $ref: "#/components/schemas/ApiResponseBase"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/AiMessagesData"
+    AiChatStreamRequest:
+      type: object
+      required: [clientMessageId, content]
+      properties:
+        clientMessageId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        content:
+          type: string
+          minLength: 1
+          maxLength: 2000
+    AiConversationResetData:
+      type: object
+      required: [conversation]
+      properties:
+        conversation:
+          $ref: "#/components/schemas/AiConversationState"
+    AiConversationResetResponse:
+      allOf:
+        - $ref: "#/components/schemas/ApiResponseBase"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/AiConversationResetData"
+    AiPurchaseRequest:
+      type: object
+      required: [clientRequestId, planId]
+      properties:
+        clientRequestId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        planId:
+          type: string
+    AiPurchase:
+      type: object
+      required: [purchaseId, clientRequestId, plan, amount, currency, status, createdAt, updatedAt]
+      properties:
+        purchaseId:
+          type: string
+        clientRequestId:
+          type: string
+        plan:
+          $ref: "#/components/schemas/AiPlan"
+        amount:
+          type: string
+          pattern: "^\\d+(\\.\\d{1,2})?$"
+        currency:
+          type: string
+          enum: [CREDIT]
+        status:
+          type: string
+          enum: [processing, success, failed, unknown]
+        failureCode:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    AiPurchaseData:
+      type: object
+      required: [purchase]
+      properties:
+        purchase:
+          $ref: "#/components/schemas/AiPurchase"
+        quota:
+          allOf:
+            - $ref: "#/components/schemas/AiQuota"
+          nullable: true
+    AiPurchaseResponse:
+      allOf:
+        - $ref: "#/components/schemas/ApiResponseBase"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/AiPurchaseData"

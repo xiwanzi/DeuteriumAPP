@@ -195,3 +195,229 @@ object PlayerFollows : Table("player_follows") {
     val createdAt = timestamp("created_at")
     override val primaryKey = PrimaryKey(userId, targetServerUuid)
 }
+
+object AiPromptVersions : Table("ai_prompt_versions") {
+    val id = varchar("id", 40)
+    val title = varchar("title", 80)
+    val content = text("content")
+    val active = bool("active")
+    val createdAt = timestamp("created_at")
+    val updatedAt = timestamp("updated_at")
+    override val primaryKey = PrimaryKey(id)
+}
+
+object AiModelConfigs : Table("ai_model_configs") {
+    val id = varchar("id", 40)
+    val provider = varchar("provider", 40)
+    val baseUrl = varchar("base_url", 512)
+    val model = varchar("model", 80)
+    val temperature = decimal("temperature", 4, 2)
+    val maxTokens = integer("max_tokens")
+    val thinkingEnabled = bool("thinking_enabled")
+    val active = bool("active")
+    val createdAt = timestamp("created_at")
+    val updatedAt = timestamp("updated_at")
+    override val primaryKey = PrimaryKey(id)
+}
+
+object AiSettings : Table("ai_settings") {
+    val key = varchar("setting_key", 80)
+    val value = text("setting_value")
+    val updatedAt = timestamp("updated_at")
+    override val primaryKey = PrimaryKey(key)
+}
+
+object AiPlans : Table("ai_plans") {
+    val id = varchar("id", 40)
+    val code = varchar("code", 40).uniqueIndex()
+    val name = varchar("name", 80)
+    val description = varchar("description", 255)
+    val price = decimal("price", 18, 2)
+    val currency = varchar("currency", 16)
+    val quotaPerWindow = integer("quota_per_window")
+    val quotaWindowHours = integer("quota_window_hours")
+    val durationDays = integer("duration_days")
+    val modelTier = varchar("model_tier", 32)
+    val active = bool("active")
+    val sortOrder = integer("sort_order")
+    val createdAt = timestamp("created_at")
+    val updatedAt = timestamp("updated_at")
+    override val primaryKey = PrimaryKey(id)
+}
+
+object AiEntitlements : Table("ai_entitlements") {
+    val userId = varchar("user_id", 40).references(Users.id)
+    val planId = varchar("plan_id", 40).nullable()
+    val planCode = varchar("plan_code", 40)
+    val quotaPerWindow = integer("quota_per_window")
+    val quotaWindowHours = integer("quota_window_hours")
+    val modelTier = varchar("model_tier", 32)
+    val expiresAt = timestamp("expires_at").nullable()
+    val updatedAt = timestamp("updated_at")
+    override val primaryKey = PrimaryKey(userId)
+}
+
+object AiQuotaUsage : Table("ai_quota_usage") {
+    val userId = varchar("user_id", 40).references(Users.id)
+    val windowStartedAt = timestamp("window_started_at")
+    val used = integer("used")
+    val updatedAt = timestamp("updated_at")
+    override val primaryKey = PrimaryKey(userId, windowStartedAt)
+}
+
+object AiPurchases : Table("ai_purchases") {
+    val id = varchar("id", 40)
+    val clientRequestId = varchar("client_request_id", 128)
+    val userId = varchar("user_id", 40).references(Users.id)
+    val planId = varchar("plan_id", 40)
+    val amount = decimal("amount", 18, 2)
+    val currency = varchar("currency", 16)
+    val status = varchar("status", 20)
+    val failureCode = varchar("failure_code", 64).nullable()
+    val createdAt = timestamp("created_at")
+    val updatedAt = timestamp("updated_at")
+    override val primaryKey = PrimaryKey(id)
+    init {
+        uniqueIndex(userId, clientRequestId)
+    }
+}
+
+object AiConversations : Table("ai_conversations") {
+    val id = varchar("id", 40)
+    val userId = varchar("user_id", 40).references(Users.id)
+    val status = varchar("status", 20)
+    val createdAt = timestamp("created_at")
+    val updatedAt = timestamp("updated_at")
+    override val primaryKey = PrimaryKey(id)
+}
+
+object AiMessages : Table("ai_messages") {
+    val id = varchar("id", 40)
+    val conversationId = varchar("conversation_id", 40).references(AiConversations.id)
+    val userId = varchar("user_id", 40).references(Users.id)
+    val clientMessageId = varchar("client_message_id", 128).nullable()
+    val role = varchar("role", 20)
+    val content = text("content")
+    val createdAt = timestamp("created_at")
+    override val primaryKey = PrimaryKey(id)
+    init {
+        uniqueIndex(userId, clientMessageId)
+    }
+}
+
+object AiRequestExchanges : Table("ai_request_exchanges") {
+    val id = varchar("id", 40)
+    val userId = varchar("user_id", 40).references(Users.id)
+    val clientMessageId = varchar("client_message_id", 128)
+    val conversationId = varchar("conversation_id", 40).nullable()
+    val userMessageId = varchar("user_message_id", 40).nullable()
+    val assistantMessageId = varchar("assistant_message_id", 40).nullable()
+    val status = varchar("status", 20)
+    val errorCode = varchar("error_code", 80).nullable()
+    val errorMessage = text("error_message").nullable()
+    val createdAt = timestamp("created_at")
+    val updatedAt = timestamp("updated_at")
+    override val primaryKey = PrimaryKey(id)
+    init {
+        uniqueIndex(userId, clientMessageId)
+    }
+}
+
+object AiMemoryItems : Table("ai_memory_items") {
+    val id = varchar("id", 40)
+    val userId = varchar("user_id", 40).references(Users.id)
+    val content = text("content")
+    val kind = varchar("kind", 32)
+    val weight = decimal("weight", 5, 2)
+    val status = varchar("status", 20)
+    val sourceValue = varchar("source", 32)
+    val createdAt = timestamp("created_at")
+    val updatedAt = timestamp("updated_at")
+    override val primaryKey = PrimaryKey(id)
+}
+
+object AiKnowledgeItems : Table("ai_knowledge_items") {
+    val id = varchar("id", 40)
+    val category = varchar("category", 80)
+    val title = varchar("title", 120)
+    val keywords = text("keywords")
+    val content = text("content")
+    val weight = decimal("weight", 5, 2)
+    val active = bool("active")
+    val createdAt = timestamp("created_at")
+    val updatedAt = timestamp("updated_at")
+    override val primaryKey = PrimaryKey(id)
+}
+
+object AiKnowledgeDocuments : Table("ai_knowledge_documents") {
+    val id = varchar("id", 40)
+    val sourceUrl = varchar("source_url", 512)
+    val category = varchar("category", 80)
+    val title = varchar("title", 160)
+    val content = text("content")
+    val checksum = varchar("checksum", 128)
+    val trustLevel = integer("trust_level")
+    val active = bool("active")
+    val createdAt = timestamp("created_at")
+    val updatedAt = timestamp("updated_at")
+    override val primaryKey = PrimaryKey(id)
+}
+
+object AiKnowledgeChunks : Table("ai_knowledge_chunks") {
+    val id = varchar("id", 40)
+    val documentId = varchar("document_id", 40).references(AiKnowledgeDocuments.id)
+    val sourceUrl = varchar("source_url", 512)
+    val category = varchar("category", 80)
+    val title = varchar("title", 160)
+    val headingPath = varchar("heading_path", 255)
+    val chunkText = text("chunk_text")
+    val keywords = text("keywords")
+    val weight = decimal("weight", 5, 2)
+    val active = bool("active")
+    val createdAt = timestamp("created_at")
+    val updatedAt = timestamp("updated_at")
+    override val primaryKey = PrimaryKey(id)
+}
+
+object AiRequestAudits : Table("ai_request_audits") {
+    val id = varchar("id", 40)
+    val userId = varchar("user_id", 40).nullable()
+    val channel = varchar("channel", 32)
+    val requestText = text("request_text")
+    val responseText = text("response_text").nullable()
+    val riskCode = varchar("risk_code", 64).nullable()
+    val status = varchar("status", 20)
+    val model = varchar("model", 80).nullable()
+    val tokenEstimate = integer("token_estimate").nullable()
+    val providerStatusCode = integer("provider_status_code").nullable()
+    val providerError = text("provider_error").nullable()
+    val firstTokenLatencyMs = integer("first_token_latency_ms").nullable()
+    val totalLatencyMs = integer("total_latency_ms").nullable()
+    val retryCount = integer("retry_count").nullable()
+    val emittedDelta = bool("emitted_delta").nullable()
+    val knowledgeQuery = text("knowledge_query").nullable()
+    val knowledgeSources = text("knowledge_sources").nullable()
+    val createdAt = timestamp("created_at")
+    override val primaryKey = PrimaryKey(id)
+}
+
+object AiQqGroups : Table("ai_qq_groups") {
+    val groupId = varchar("group_id", 40)
+    val enabled = bool("enabled")
+    val triggerMode = varchar("trigger_mode", 20)
+    val triggerPattern = varchar("trigger_pattern", 255)
+    val quotaPerWindow = integer("quota_per_window")
+    val windowMinutes = integer("window_minutes")
+    val mutedUntil = timestamp("muted_until").nullable()
+    val updatedAt = timestamp("updated_at")
+    override val primaryKey = PrimaryKey(groupId)
+}
+
+object AiAdminEvents : Table("ai_admin_events") {
+    val id = varchar("id", 40)
+    val actor = varchar("actor", 80)
+    val action = varchar("action", 80)
+    val target = varchar("target", 120).nullable()
+    val createdAt = timestamp("created_at")
+    override val primaryKey = PrimaryKey(id)
+}

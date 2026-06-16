@@ -49,6 +49,8 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    maxParallelForks = 1
+    systemProperty("junit.jupiter.execution.parallel.enabled", "false")
 }
 
 tasks.register<Copy>("prepareWindowsRuntime") {
