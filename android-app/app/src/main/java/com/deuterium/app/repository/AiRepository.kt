@@ -1,5 +1,6 @@
 package com.deuterium.app.repository
 
+import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -41,6 +42,7 @@ class AiRepository(
     private val sessionStore: SessionStore,
     private val onUnauthorized: () -> Unit = {}
 ) {
+    private var lastInitialLoadAt = 0L
     val messages = mutableStateListOf<AiUiMessage>()
     val plans = mutableStateListOf<AiPlan>()
 
@@ -63,7 +65,10 @@ class AiRepository(
     var message by mutableStateOf<String?>(null)
         private set
 
-    suspend fun loadInitial(): RepoResult<Unit> {
+    suspend fun loadInitial(force: Boolean = false): RepoResult<Unit> {
+        if (!force && lastInitialLoadAt > 0L && SystemClock.elapsedRealtime() - lastInitialLoadAt < InitialLoadFreshMillis) {
+            return RepoResult.Success(Unit)
+        }
         loading = true
         message = null
         try {
@@ -80,6 +85,7 @@ class AiRepository(
                 message = friendlyAiError(meResult.message, meResult.code, meResult.retryAfterSeconds)
                 return meResult.copy(message = message ?: meResult.message)
             }
+            lastInitialLoadAt = SystemClock.elapsedRealtime()
             return if (plansResult is RepoResult.Error) RepoResult.Success(Unit) else RepoResult.Success(Unit)
         } finally {
             loading = false
@@ -154,8 +160,8 @@ class AiRepository(
         var lastDeltaFlushAt = 0L
         fun flushDeltaBuffer(force: Boolean = false) {
             if (deltaBuffer.isEmpty()) return
-            val now = System.currentTimeMillis()
-            if (!force && deltaBuffer.length < 24 && now - lastDeltaFlushAt < 48L) return
+            val now = SystemClock.elapsedRealtime()
+            if (!force && deltaBuffer.length < DeltaFlushMinChars && now - lastDeltaFlushAt < DeltaFlushIntervalMillis) return
             val chunk = deltaBuffer.toString()
             deltaBuffer.clear()
             lastDeltaFlushAt = now
@@ -459,3 +465,7 @@ private fun purchaseStatusMessage(status: String): String {
         else -> "购买请求已提交。"
     }
 }
+
+private const val InitialLoadFreshMillis = 30_000L
+private const val DeltaFlushMinChars = 64
+private const val DeltaFlushIntervalMillis = 80L

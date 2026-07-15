@@ -72,6 +72,8 @@ class ApiClient(private val tokenProvider: () -> String?) {
             } else {
                 parseError(response)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: SocketTimeoutException) {
             RepoResult.Error("连接服务器超时，请稍后再试。")
         } catch (e: IOException) {

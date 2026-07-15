@@ -323,6 +323,12 @@ data class WalletRecordEventData(val record: WalletRecord)
 
 data class ChatMentionEventData(val message: ChatMessage)
 
+enum class ChatDeliveryState {
+    Confirmed,
+    Pending,
+    Unknown
+}
+
 @Immutable
 data class ChatFeedItem(
     val id: String,
@@ -333,7 +339,8 @@ data class ChatFeedItem(
     val mine: Boolean = false,
     val event: Boolean = false,
     val sentAt: String? = null,
-    val kind: String = "public_chat"
+    val kind: String = "public_chat",
+    val deliveryState: ChatDeliveryState = ChatDeliveryState.Confirmed
 )
 
 @Immutable

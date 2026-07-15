@@ -158,6 +158,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.deuterium.app.data.ChatFeedItem
+import com.deuterium.app.data.ChatDeliveryState
 import com.deuterium.app.data.ChatHistoryItem
 import com.deuterium.app.data.OnlinePlayer
 import com.deuterium.app.data.PlayerSummary
@@ -175,6 +176,7 @@ import com.deuterium.app.repository.AiUiMessage
 import com.deuterium.app.repository.ChatHistoryStore
 import com.deuterium.app.repository.ChatRepository
 import com.deuterium.app.repository.PendingAiPurchaseRef
+import com.deuterium.app.repository.PendingTransferRequest
 import com.deuterium.app.repository.SessionStore
 import com.deuterium.app.repository.WalletRepository
 import com.deuterium.app.repository.durationLabel
@@ -189,12 +191,13 @@ import com.deuterium.app.ui.theme.DeuteriumColorPreset
 import com.deuterium.app.ui.theme.DeuteriumTheme
 import com.deuterium.app.ui.theme.DeuteriumThemeMode
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestHighestRefreshRate()
         val preferences = AppPreferences(this)
         val chatHistoryStore = ChatHistoryStore(this)
         setContent {
@@ -231,17 +234,6 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
         requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST)
-    }
-
-    private fun requestHighestRefreshRate() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
-
-        @Suppress("DEPRECATION")
-        val fastestMode = windowManager.defaultDisplay.supportedModes.maxByOrNull { it.refreshRate } ?: return
-        window.attributes = window.attributes.apply {
-            preferredDisplayModeId = fastestMode.modeId
-            preferredRefreshRate = fastestMode.refreshRate
-        }
     }
 
     private companion object {
@@ -351,6 +343,38 @@ private class AppPreferences(context: Context) : SessionStore {
         prefs.edit().putString(walletRecordKey(userId), recordId).apply()
     }
 
+    override fun loadPendingTransfer(userId: String): PendingTransferRequest? {
+        val clientRequestId = prefs.getString(transferKey(userId, "client"), null)
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        val recipientPlayerRef = prefs.getString(transferKey(userId, "recipient"), null)
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        val amount = prefs.getString(transferKey(userId, "amount"), null)
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        val note = prefs.getString(transferKey(userId, "note"), null)?.takeIf { it.isNotBlank() }
+        return PendingTransferRequest(clientRequestId, recipientPlayerRef, amount, note)
+    }
+
+    override fun savePendingTransfer(userId: String, pending: PendingTransferRequest) {
+        prefs.edit()
+            .putString(transferKey(userId, "client"), pending.clientRequestId)
+            .putString(transferKey(userId, "recipient"), pending.recipientPlayerRef)
+            .putString(transferKey(userId, "amount"), pending.amount)
+            .putString(transferKey(userId, "note"), pending.note.orEmpty())
+            .apply()
+    }
+
+    override fun clearPendingTransfer(userId: String) {
+        prefs.edit()
+            .remove(transferKey(userId, "client"))
+            .remove(transferKey(userId, "recipient"))
+            .remove(transferKey(userId, "amount"))
+            .remove(transferKey(userId, "note"))
+            .apply()
+    }
+
     override fun loadPendingAiPurchase(userId: String, planId: String): PendingAiPurchaseRef? {
         val clientRequestId = prefs.getString(aiPurchaseKey(userId, planId, "client"), null)
             ?.takeIf { it.isNotBlank() }
@@ -375,6 +399,8 @@ private class AppPreferences(context: Context) : SessionStore {
     }
 
     private fun walletRecordKey(userId: String): String = "$KEY_LAST_WALLET_RECORD_ID_PREFIX$userId"
+    private fun transferKey(userId: String, suffix: String): String =
+        "$KEY_PENDING_TRANSFER_PREFIX${userId}_$suffix"
     private fun aiPurchaseKey(userId: String, planId: String, suffix: String): String =
         "$KEY_PENDING_AI_PURCHASE_PREFIX${userId}_${planId}_$suffix"
 
@@ -392,6 +418,7 @@ private class AppPreferences(context: Context) : SessionStore {
         const val KEY_USER_QQ = "user_qq"
         const val KEY_USER_IDENTITY_STATUS = "user_identity_status"
         const val KEY_LAST_WALLET_RECORD_ID_PREFIX = "last_wallet_record_id_"
+        const val KEY_PENDING_TRANSFER_PREFIX = "pending_transfer_"
         const val KEY_PENDING_AI_PURCHASE_PREFIX = "pending_ai_purchase_"
     }
 }
@@ -515,6 +542,10 @@ private fun DeuteriumApp(
             sessionStore = preferences,
             onUnauthorized = { user = null }
         )
+    }
+
+    DisposableEffect(chatRepository) {
+        onDispose { chatRepository.close() }
     }
 
     LaunchedEffect(Unit) {
@@ -1519,6 +1550,9 @@ private fun TransferScreen(
     val scope = rememberCoroutineScope()
     var query by remember(initialRecipient) { mutableStateOf(initialRecipient?.gameId ?: "") }
     var recipient by remember(initialRecipient) { mutableStateOf(initialRecipient) }
+    var recipientSearchJob by remember { mutableStateOf<Job?>(null) }
+    var recipientSearchGeneration by remember { mutableStateOf(0) }
+    var recipientSearching by remember { mutableStateOf(false) }
     var amount by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
     var message by remember { mutableStateOf<String?>(null) }
@@ -1580,14 +1614,33 @@ private fun TransferScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
                         value = query,
-                        onValueChange = { query = it },
+                        onValueChange = {
+                            query = it
+                            recipient = null
+                            message = null
+                            recipientSearchGeneration += 1
+                            recipientSearchJob?.cancel()
+                            recipientSearching = false
+                        },
                         label = { Text("游戏内 ID 或 QQ") },
                         singleLine = true,
                         modifier = Modifier.weight(1f)
                     )
-                    OutlinedButton(onClick = {
-                        scope.launch {
-                            when (val result = repository.findRecipient(query)) {
+                    OutlinedButton(
+                        enabled = query.isNotBlank() && !recipientSearching,
+                        onClick = {
+                            val searchedQuery = query.trim()
+                            recipientSearchGeneration += 1
+                            val generation = recipientSearchGeneration
+                            recipientSearchJob?.cancel()
+                            recipientSearching = true
+                            recipientSearchJob = scope.launch {
+                                val result = repository.findRecipient(searchedQuery)
+                                if (generation != recipientSearchGeneration || query.trim() != searchedQuery) {
+                                    return@launch
+                                }
+                                recipientSearching = false
+                                when (result) {
                                 is RepoResult.Success -> {
                                     recipient = result.value
                                     message = "已确认收款方：${result.value.gameId}"
@@ -2170,12 +2223,19 @@ private fun ChatScreen(
         onObservedLastVisibleIdChange(currentLastId)
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(repository) {
         if (repository.messages.isEmpty()) {
             repository.syncRecentMessages()
         }
         repository.refreshPresenceAndDirectory()
         repository.refreshFollows()
+    }
+
+    LaunchedEffect(repository) {
+        while (isActive) {
+            delay(15_000L)
+            if (repository.appForeground) repository.syncRecentMessages()
+        }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -2624,7 +2684,7 @@ private fun AiScreen(repository: AiRepository) {
         }
     }
 
-    LaunchedEffect(repository.messages.size, repository.messages.lastOrNull()?.content) {
+    LaunchedEffect(repository.messages.size, repository.messages.lastOrNull()?.id) {
         val last = repository.messages.lastOrNull() ?: return@LaunchedEffect
         if (last.role == "user" || nearBottom) {
             listState.scrollToItem(repository.messages.lastIndex)
@@ -3998,6 +4058,7 @@ private fun ChatHistoryDialog(
 
     LaunchedEffect(query) {
         loading = true
+        if (query.isNotBlank()) delay(250)
         history = repository.searchHistory(query)
         loading = false
     }
@@ -4430,6 +4491,13 @@ private fun ChatBubble(
                     style = MaterialTheme.typography.bodyLarge,
                     color = contentColor
                 )
+                if (message.mine && message.deliveryState != ChatDeliveryState.Confirmed) {
+                    Text(
+                        text = if (message.deliveryState == ChatDeliveryState.Pending) "发送中…" else "发送结果待确认",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = contentColor.copy(alpha = 0.72f)
+                    )
+                }
             }
         }
     }
