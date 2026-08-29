@@ -1,6 +1,12 @@
-# DeuteriumAPP
+<p align="center">
+  <img src="design/app-icon/deuterium-app-icon-512.png" alt="DeuteriumAPP" width="112" height="112" />
+</p>
 
-Minecraft server companion app with a native Android client, Kotlin backend, and Bukkit plugin bridge.
+<h1 align="center">DeuteriumAPP</h1>
+
+<p align="center">
+  Minecraft server companion app with a native Android client, Kotlin backend, and Bukkit plugin bridge.
+</p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" /></a>

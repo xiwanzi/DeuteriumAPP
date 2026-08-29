@@ -1,4 +1,4 @@
-﻿package com.deuterium.backend.repository
+package com.deuterium.backend.repository
 
 import com.deuterium.backend.db.ChatMessages
 import com.deuterium.backend.db.AppPresence
@@ -62,6 +62,9 @@ import java.time.temporal.ChronoUnit
 import java.util.Base64
 
 class AccountRepository {
+    fun findByUserId(userId: String): RegisteredUserRecord? =
+        Users.selectAll().where { Users.id eq userId }.singleOrNull()?.toRegisteredUser()
+
     fun findByQq(qq: String): RegisteredUserRecord? =
         Users.selectAll().where { Users.qq eq qq }.singleOrNull()?.toRegisteredUser()
 
@@ -151,7 +154,7 @@ class SessionRepository(private val sessionDays: Long) {
     fun create(user: RegisteredUserRecord, tokenHash: String): String {
         Sessions.insert {
             it[id] = Ids.sessionId()
-            it[userId] = user.userId
+            it[Sessions.userId] = user.userId
             it[Sessions.tokenHash] = tokenHash
             it[expiresAt] = Instant.now().plus(sessionDays, ChronoUnit.DAYS)
             it[revokedAt] = null

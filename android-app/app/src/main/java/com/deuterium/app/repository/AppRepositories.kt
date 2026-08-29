@@ -1,5 +1,6 @@
-﻿package com.deuterium.app.repository
+package com.deuterium.app.repository
 
+import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -9,8 +10,8 @@ import com.deuterium.app.data.AppUpdateCheckData
 import com.deuterium.app.data.AuthData
 import com.deuterium.app.data.AppStatePayload
 import com.deuterium.app.data.ChatFeedItem
+import com.deuterium.app.data.ChatDeliveryState
 import com.deuterium.app.data.ChatHistoryItem
-import com.deuterium.app.data.ChatMentionEventData
 import com.deuterium.app.data.ChatMessage
 import com.deuterium.app.data.CreateTransferRequest
 import com.deuterium.app.data.LoginRequest
@@ -24,28 +25,73 @@ import com.deuterium.app.data.RegisterRequest
 import com.deuterium.app.data.RegistrationCodeRequest
 import com.deuterium.app.data.RepoResult
 import com.deuterium.app.data.ResolvedPlayerRef
-import com.deuterium.app.data.ServerEvent
 import com.deuterium.app.data.Transfer
 import com.deuterium.app.data.UserProfile
 import com.deuterium.app.data.VerificationTokenData
 import com.deuterium.app.data.WalletBalance
 import com.deuterium.app.data.WalletRecord
-import com.deuterium.app.data.WalletRecordEventData
 import com.deuterium.app.network.ApiClient
 import com.google.gson.Gson
-import com.google.gson.JsonObject
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.time.Instant
+import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+
+private const val PlayerDirectoryRefreshMinIntervalMillis = 15_000L
+private const val WalletSyncFreshMillis = 5_000L
+private const val ChatSyncFreshMillis = 5_000L
+private const val PresenceSyncFreshMillis = 5_000L
+private const val FollowSyncFreshMillis = 30_000L
+private const val HistoryWriteBatchMillis = 250L
+private const val HistoryWriteBatchSize = 64
+private const val PendingMessageTimeoutMillis = 12_000L
+private const val PendingMessageMatchWindowMillis = 30_000L
+private val TerminalTransferErrorCodes = setOf(
+    "AMOUNT_INVALID",
+    "RECIPIENT_NOT_FOUND",
+    "RECIPIENT_IDENTITY_UNCONFIRMED",
+    "BALANCE_INSUFFICIENT",
+    "TRANSFER_DUPLICATE",
+    "TRANSFER_FAILED",
+    "PLUGIN_BRIDGE_UNAVAILABLE"
+)
+
+data class PendingAiPurchaseRef(
+    val clientRequestId: String,
+    val purchaseId: String? = null
+)
+
+data class PendingTransferRequest(
+    val clientRequestId: String,
+    val recipientPlayerRef: String,
+    val amount: String,
+    val note: String?
+) {
+    fun matches(recipientPlayerRef: String, amount: String, note: String?): Boolean =
+        this.recipientPlayerRef == recipientPlayerRef && this.amount == amount && this.note == note
+}
+
+private data class HistoryWrite(
+    val accountId: String,
+    val item: ChatFeedItem
+)
 
 interface SessionStore {
     fun loadToken(): String?
@@ -55,6 +101,12 @@ interface SessionStore {
     fun clearSession()
     fun loadLastWalletRecordId(userId: String): String? = null
     fun saveLastWalletRecordId(userId: String, recordId: String) = Unit
+    fun loadPendingTransfer(userId: String): PendingTransferRequest? = null
+    fun savePendingTransfer(userId: String, pending: PendingTransferRequest) = Unit
+    fun clearPendingTransfer(userId: String) = Unit
+    fun loadPendingAiPurchase(userId: String, planId: String): PendingAiPurchaseRef? = null
+    fun savePendingAiPurchase(userId: String, planId: String, pending: PendingAiPurchaseRef) = Unit
+    fun clearPendingAiPurchase(userId: String, planId: String) = Unit
 }
 
 class AuthRepository(
@@ -160,13 +212,26 @@ class WalletRepository(
     private val apiClient: ApiClient,
     private val sessionStore: SessionStore
 ) {
+    private val syncMutex = Mutex()
+    private val transferMutex = Mutex()
+    private var lastSyncAt = 0L
     var balance by mutableStateOf<WalletBalance?>(null)
         private set
     var walletMessage by mutableStateOf<String?>(null)
         private set
     val records = mutableStateListOf<WalletRecord>()
 
-    suspend fun loadWallet(): RepoResult<Unit> {
+    suspend fun loadWallet(force: Boolean = false): RepoResult<Unit> = syncMutex.withLock {
+        val now = SystemClock.elapsedRealtime()
+        if (!force && balance != null && now - lastSyncAt < WalletSyncFreshMillis) {
+            return@withLock RepoResult.Success(Unit)
+        }
+        val result = loadWalletUnlocked()
+        lastSyncAt = SystemClock.elapsedRealtime()
+        result
+    }
+
+    private suspend fun loadWalletUnlocked(): RepoResult<Unit> {
         val balanceResult = apiClient.request { apiClient.backend.walletBalance() }
         if (balanceResult is RepoResult.Success) {
             balance = balanceResult.value.balance
@@ -203,23 +268,29 @@ class WalletRepository(
         }
     }
 
-    suspend fun syncNewRecords(): RepoResult<Int> {
-        val userId = sessionStore.loadUser()?.userId ?: return RepoResult.Error("请先登录。", code = "UNAUTHORIZED")
-        val afterRecordId = sessionStore.loadLastWalletRecordId(userId)
-        if (afterRecordId.isNullOrBlank()) {
-            return when (val result = loadWallet()) {
-                is RepoResult.Success -> RepoResult.Success(records.size)
-                is RepoResult.Error -> result
-            }
+    suspend fun syncNewRecords(force: Boolean = false): RepoResult<Int> = syncMutex.withLock {
+        val now = SystemClock.elapsedRealtime()
+        if (!force && now - lastSyncAt < WalletSyncFreshMillis) {
+            return@withLock RepoResult.Success(0)
         }
-        return when (val result = apiClient.request { apiClient.backend.walletRecords(limit = 100, afterRecordId = afterRecordId) }) {
+        val userId = sessionStore.loadUser()?.userId
+            ?: return@withLock RepoResult.Error("请先登录。", code = "UNAUTHORIZED")
+        val afterRecordId = sessionStore.loadLastWalletRecordId(userId)
+        val result = if (afterRecordId.isNullOrBlank()) {
+            when (val loadResult = loadWalletUnlocked()) {
+                is RepoResult.Success -> RepoResult.Success(records.size)
+                is RepoResult.Error -> loadResult
+            }
+        } else when (val recordsResult = apiClient.request { apiClient.backend.walletRecords(limit = 100, afterRecordId = afterRecordId) }) {
             is RepoResult.Success -> {
-                val inserted = mergeRecords(result.value.records)
+                val inserted = mergeRecords(recordsResult.value.records)
                 if (inserted > 0) updateSyncMarker(records)
                 RepoResult.Success(inserted)
             }
-            is RepoResult.Error -> result
+            is RepoResult.Error -> recordsResult
         }
+        lastSyncAt = SystemClock.elapsedRealtime()
+        result
     }
 
     fun mergeRecord(record: WalletRecord) {
@@ -242,23 +313,46 @@ class WalletRepository(
         }
     }
 
-    suspend fun transfer(recipient: ResolvedPlayerRef?, amountText: String, note: String): RepoResult<Transfer> {
+    suspend fun transfer(recipient: ResolvedPlayerRef?, amountText: String, note: String): RepoResult<Transfer> =
+        transferMutex.withLock { transferUnlocked(recipient, amountText, note) }
+
+    private suspend fun transferUnlocked(recipient: ResolvedPlayerRef?, amountText: String, note: String): RepoResult<Transfer> {
         if (recipient == null) return RepoResult.Error("请先确认收款玩家。")
         val amountError = validateAmount(amountText)
         if (amountError != null) return RepoResult.Error(amountError)
+        val userId = sessionStore.loadUser()?.userId
+            ?: return RepoResult.Error("请先登录。", code = "UNAUTHORIZED")
+        val normalizedAmount = amountText.trim().toBigDecimal().setScale(2).toPlainString()
+        val normalizedNote = note.trim().ifBlank { null }
+        val pending = sessionStore.loadPendingTransfer(userId)
+            ?.takeIf { it.matches(recipient.playerRef, normalizedAmount, normalizedNote) }
+            ?: PendingTransferRequest(
+                clientRequestId = "android-${UUID.randomUUID()}",
+                recipientPlayerRef = recipient.playerRef,
+                amount = normalizedAmount,
+                note = normalizedNote
+            ).also { sessionStore.savePendingTransfer(userId, it) }
         val request = CreateTransferRequest(
-            clientRequestId = "android-${UUID.randomUUID()}",
+            clientRequestId = pending.clientRequestId,
             recipientPlayerRef = recipient.playerRef,
-            amount = amountText.trim(),
-            note = note.trim().ifBlank { null }
+            amount = normalizedAmount,
+            note = normalizedNote
         )
         return when (val result = apiClient.request { apiClient.backend.createTransfer(request) }) {
             is RepoResult.Success -> {
                 val transfer = result.value.transfer
-                loadWallet()
+                if (transfer.status == "success" || transfer.status == "failed") {
+                    sessionStore.clearPendingTransfer(userId)
+                }
+                loadWallet(force = true)
                 RepoResult.Success(transfer)
             }
-            is RepoResult.Error -> result
+            is RepoResult.Error -> {
+                if (result.code in TerminalTransferErrorCodes) {
+                    sessionStore.clearPendingTransfer(userId)
+                }
+                result
+            }
         }
     }
 
@@ -306,11 +400,27 @@ class ChatRepository(
     private val onSocketConnected: () -> Unit = {}
 ) {
     private val gson = Gson()
+    private val socketEventParser = ChatSocketEventParser(gson)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val messageSyncMutex = Mutex()
+    private val presenceSyncMutex = Mutex()
+    private val followSyncMutex = Mutex()
+    private val historyWriteChannel = Channel<HistoryWrite>(Channel.UNLIMITED)
+    private val historyWriteScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val historyWriterJob = historyWriteScope.launch { writeHistoryBatches() }
     private var webSocket: WebSocket? = null
     private var reconnecting = AtomicBoolean(false)
     private var includeEvents = false
     private var shouldReconnect = false
+    private val knownMessageIds = LinkedHashSet<String>()
+    private val pendingClientMessages = LinkedHashSet<String>()
+    private val pendingMessageTimeoutJobs = mutableMapOf<String, Job>()
+    private var playerDirectoryRefreshPending = false
+    private var lastPlayerDirectoryRefreshAt = 0L
+    private var lastMessageSyncAt = 0L
+    private var lastPresenceSyncAt = 0L
+    private var lastFollowSyncAt = 0L
+    private var closed = false
 
     val messages = mutableStateListOf<ChatFeedItem>()
     val onlinePlayers = mutableStateListOf<OnlinePlayer>()
@@ -323,40 +433,25 @@ class ChatRepository(
     var appForeground by mutableStateOf(false)
         private set
 
-    suspend fun loadInitial(): RepoResult<Unit> {
-        val chatResult = apiClient.request { apiClient.backend.chatMessages(limit = 100) }
+    suspend fun loadInitial(): RepoResult<Unit> = coroutineScope {
+        val chat = async { syncRecentMessages(surfaceErrors = true) }
+        val presence = async { refreshPresenceAndDirectory() }
+        val follows = async { refreshFollows() }
+        val chatResult = chat.await()
+        presence.await()
+        follows.await()
         if (chatResult is RepoResult.Success) {
-            val feedItems = mergeChatFeedItems(emptyList(), chatResult.value.messages.map(::toFeedItem))
-            messages.clear()
-            messages.addAll(feedItems.messages)
-            saveHistoryNow(feedItems.inserted)
-        } else if (chatResult is RepoResult.Error) {
-            if (handleUnauthorized(chatResult)) return chatResult
-            connectionMessage = chatResult.message
+            RepoResult.Success(Unit)
+        } else {
+            RepoResult.Error(connectionMessage ?: "聊天记录加载失败。")
         }
-
-        val presenceResult = apiClient.request { apiClient.backend.presence() }
-        if (presenceResult is RepoResult.Success) {
-            onlineCount = presenceResult.value.onlineCount
-        }
-
-        val playersResult = apiClient.request { apiClient.backend.onlinePlayers() }
-        if (playersResult is RepoResult.Success) {
-            onlinePlayers.clear()
-            onlinePlayers.addAll(playersResult.value.players)
-        }
-
-        refreshPlayerDirectory()
-        refreshFollows()
-
-        return if (chatResult is RepoResult.Success) RepoResult.Success(Unit) else RepoResult.Error(connectionMessage ?: "聊天记录加载失败。")
     }
 
     suspend fun refreshPlayerDirectory(): RepoResult<List<PlayerDirectoryItem>> {
+        lastPlayerDirectoryRefreshAt = SystemClock.elapsedRealtime()
         return when (val result = apiClient.request { apiClient.backend.playerDirectory() }) {
             is RepoResult.Success -> {
-                playerDirectory.clear()
-                playerDirectory.addAll(result.value.players)
+                replacePlayerDirectory(result.value.players)
                 refreshFollowedRefsFromDirectory()
                 RepoResult.Success(result.value.players)
             }
@@ -377,8 +472,7 @@ class ChatRepository(
                     )
                 }
                 if (fallback.isNotEmpty()) {
-                    playerDirectory.clear()
-                    playerDirectory.addAll(fallback)
+                    replacePlayerDirectory(fallback)
                     RepoResult.Success(fallback)
                 } else {
                     result
@@ -387,54 +481,71 @@ class ChatRepository(
         }
     }
 
-    suspend fun refreshFollows(): RepoResult<List<PlayerDirectoryItem>> {
-        return when (val result = apiClient.request { apiClient.backend.follows() }) {
+    suspend fun refreshFollows(force: Boolean = false): RepoResult<List<PlayerDirectoryItem>> = followSyncMutex.withLock {
+        if (!force && isFresh(lastFollowSyncAt, FollowSyncFreshMillis)) {
+            return@withLock RepoResult.Success(playerDirectory.filter { it.followed })
+        }
+        val result = when (val apiResult = apiClient.request { apiClient.backend.follows() }) {
             is RepoResult.Success -> {
                 followedPlayerRefs.clear()
-                followedPlayerRefs.addAll(result.value.players.map { it.playerRef })
-                RepoResult.Success(result.value.players)
+                followedPlayerRefs.addAll(apiResult.value.players.map { it.playerRef })
+                RepoResult.Success(apiResult.value.players)
             }
             is RepoResult.Error -> {
-                if (handleUnauthorized(result)) return result
-                result
+                if (handleUnauthorized(apiResult)) return@withLock apiResult
+                apiResult
             }
         }
+        lastFollowSyncAt = SystemClock.elapsedRealtime()
+        result
     }
 
-    suspend fun refreshPresenceAndDirectory(): RepoResult<Unit> {
+    suspend fun refreshPresenceAndDirectory(force: Boolean = false): RepoResult<Unit> = presenceSyncMutex.withLock {
+        if (!force && isFresh(lastPresenceSyncAt, PresenceSyncFreshMillis)) {
+            return@withLock RepoResult.Success(Unit)
+        }
         val presenceResult = apiClient.request { apiClient.backend.presence() }
         if (presenceResult is RepoResult.Success) {
             onlineCount = presenceResult.value.onlineCount
         } else if (presenceResult is RepoResult.Error && handleUnauthorized(presenceResult)) {
-            return presenceResult
+            return@withLock presenceResult
         }
         val playersResult = apiClient.request { apiClient.backend.onlinePlayers() }
         if (playersResult is RepoResult.Success) {
-            onlinePlayers.clear()
-            onlinePlayers.addAll(playersResult.value.players)
+            replaceOnlinePlayers(playersResult.value.players)
         } else if (playersResult is RepoResult.Error && handleUnauthorized(playersResult)) {
-            return playersResult
+            return@withLock playersResult
         }
         refreshPlayerDirectory()
-        return RepoResult.Success(Unit)
+        lastPresenceSyncAt = SystemClock.elapsedRealtime()
+        RepoResult.Success(Unit)
     }
 
-    suspend fun syncRecentMessages(surfaceErrors: Boolean = false): RepoResult<Int> {
-        return when (val result = apiClient.request { apiClient.backend.chatMessages(limit = 100) }) {
+    suspend fun syncRecentMessages(surfaceErrors: Boolean = false, force: Boolean = false): RepoResult<Int> =
+        messageSyncMutex.withLock {
+        if (!force && isFresh(lastMessageSyncAt, ChatSyncFreshMillis)) {
+            return@withLock RepoResult.Success(0)
+        }
+        val result = when (val apiResult = apiClient.request { apiClient.backend.chatMessages(limit = 100) }) {
             is RepoResult.Success -> {
-                val inserted = mergeIncomingMessages(result.value.messages.map(::toFeedItem))
+                val incoming = apiResult.value.messages.map(::toFeedItem)
+                reconcilePendingMessages(incoming)
+                val inserted = mergeIncomingMessages(incoming)
                 saveHistoryNow(inserted)
                 RepoResult.Success(inserted.size)
             }
             is RepoResult.Error -> {
-                if (handleUnauthorized(result)) return result
-                if (surfaceErrors) connectionMessage = result.message
-                result
+                if (handleUnauthorized(apiResult)) return@withLock apiResult
+                if (surfaceErrors) connectionMessage = apiResult.message
+                apiResult
             }
         }
+        lastMessageSyncAt = SystemClock.elapsedRealtime()
+        result
     }
 
     fun connect(showServerEvents: Boolean) {
+        if (closed) return
         if (webSocket != null && includeEvents == showServerEvents) return
         includeEvents = showServerEvents
         shouldReconnect = true
@@ -446,6 +557,22 @@ class ChatRepository(
         shouldReconnect = false
         webSocket?.close(1000, "Screen disposed")
         webSocket = null
+    }
+
+    fun close() {
+        if (closed) return
+        closed = true
+        shouldReconnect = false
+        reconnecting.set(false)
+        webSocket?.cancel()
+        webSocket = null
+        historyWriteChannel.close()
+        historyWriteScope.launch {
+            historyWriterJob.join()
+            historyStore.close()
+            historyWriteScope.cancel()
+        }
+        scope.cancel()
     }
 
     fun reportAppForeground(foreground: Boolean) {
@@ -498,9 +625,10 @@ class ChatRepository(
         val socket = webSocket ?: return RepoResult.Error("聊天连接暂不可用，请稍后再试。")
         val requestId = "req_ws_${UUID.randomUUID()}"
         val clientMessageId = "android-msg-${UUID.randomUUID()}"
+        val trimmed = content.trim()
         val payload = linkedMapOf<String, Any>(
             "clientMessageId" to clientMessageId,
-            "content" to content.trim()
+            "content" to trimmed
         )
         val mentions = mentionedPlayerRefs.filter { it.isNotBlank() }.distinct().take(20)
         if (mentions.isNotEmpty()) payload["mentionedPlayerRefs"] = mentions
@@ -512,6 +640,7 @@ class ChatRepository(
         )
         return if (socket.send(gson.toJson(body))) {
             connectionMessage = null
+            appendPendingMessage(clientMessageId, trimmed)
             RepoResult.Success(Unit)
         } else {
             RepoResult.Error("消息发送失败，聊天连接暂不可用。")
@@ -543,7 +672,10 @@ class ChatRepository(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                scope.launch { handleSocketMessage(text) }
+                scope.launch {
+                    val event = withContext(Dispatchers.Default) { socketEventParser.parse(text) } ?: return@launch
+                    handleSocketEvent(event)
+                }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -581,61 +713,55 @@ class ChatRepository(
         if (shouldReconnect && !sessionStore.loadToken().isNullOrBlank()) connect(includeEvents)
     }
 
-    private fun handleSocketMessage(text: String) {
-        val envelope = runCatching { gson.fromJson(text, JsonObject::class.java) }.getOrNull() ?: return
-        when (envelope.get("type")?.asString) {
-            "chat.message" -> {
-                val message = gson.fromJson(envelope.payloadObject("message"), ChatMessage::class.java)
+    private fun handleSocketEvent(event: ChatSocketEvent) {
+        when (event) {
+            is ChatSocketEvent.Message -> {
+                val message = event.message
                 val feedItem = toFeedItem(message)
                 appendLiveFeedItem(feedItem)
                 if (shouldNotifyFollowedChat(message.sender.playerRef, message.kind, feedItem.mine, followedPlayerRefs.toSet(), appForeground)) {
                     onFollowedChatNotification(message)
                 }
             }
-            "chat.mention.event" -> {
-                val payload = gson.fromJson(envelope.getAsJsonObject("payload"), ChatMentionEventData::class.java)
+            is ChatSocketEvent.Mention -> {
+                val payload = event.data
                 val currentPlayerRef = sessionStore.loadUser()?.playerRef
                 if (payload.message.sender.playerRef != currentPlayerRef) {
                     onNotificationPermissionNeeded()
                     onMentionNotification(payload.message)
                 }
             }
-            "server.event" -> {
-                val event = gson.fromJson(envelope.payloadObject("event"), ServerEvent::class.java)
+            is ChatSocketEvent.Server -> {
+                val serverEvent = event.event
                 val feedItem = ChatFeedItem(
-                    id = event.eventId,
+                    id = serverEvent.eventId,
                     sender = "服务器",
-                    content = stripMinecraftFormattingCodes(event.content),
-                    time = formatTime(event.occurredAt),
+                    content = stripMinecraftFormattingCodes(serverEvent.content),
+                    time = formatTime(serverEvent.occurredAt),
                     event = true,
-                    sentAt = event.occurredAt,
-                    kind = event.eventType
+                    sentAt = serverEvent.occurredAt,
+                    kind = serverEvent.eventType
                 )
                 appendLiveFeedItem(feedItem)
             }
-            "presence.update" -> {
-                val payload = envelope.getAsJsonObject("payload") ?: return
-                onlineCount = payload.get("onlineCount")?.asInt ?: onlineCount
-                val players = payload.getAsJsonArray("players") ?: return
-                onlinePlayers.clear()
-                players.forEach { item ->
-                    onlinePlayers.add(gson.fromJson(item, OnlinePlayer::class.java))
-                }
-                scope.launch { refreshPlayerDirectory() }
-            }
-            "chat.send.result" -> {
-                val payload = envelope.getAsJsonObject("payload") ?: return
-                if (payload.get("status")?.asString == "failed") {
-                    val error = payload.getAsJsonObject("error")
-                    connectionMessage = error?.get("message")?.asString ?: "消息发送失败，请稍后再试。"
+            is ChatSocketEvent.Presence -> {
+                onlineCount = event.onlineCount ?: onlineCount
+                event.players?.let { updatedPlayers ->
+                    replaceOnlinePlayers(updatedPlayers)
+                    refreshPlayerDirectorySoon()
                 }
             }
-            "error" -> {
-                val payload = envelope.getAsJsonObject("payload")
-                connectionMessage = payload?.get("message")?.asString ?: "聊天服务返回错误。"
+            is ChatSocketEvent.SendResult -> {
+                if (event.status == "accepted") {
+                    confirmPendingMessage(event.clientMessageId, event.messageId.orEmpty())
+                } else {
+                    removePendingMessage(event.clientMessageId)
+                    connectionMessage = event.errorMessage ?: "消息发送失败，请稍后再试。"
+                }
             }
-            "wallet.record.event" -> {
-                val payload = gson.fromJson(envelope.getAsJsonObject("payload"), WalletRecordEventData::class.java)
+            is ChatSocketEvent.ServiceError -> connectionMessage = event.message
+            is ChatSocketEvent.WalletRecord -> {
+                val payload = event.data
                 onWalletRecord(payload.record)
                 if (shouldNotifyWalletRecord(walletNotificationsEnabled(), appForeground)) {
                     onWalletNotification(payload.record)
@@ -664,26 +790,221 @@ class ChatRepository(
     }
 
     private fun saveHistory(item: ChatFeedItem) {
-        val accountId = currentAccountId()
-        scope.launch(Dispatchers.IO) {
-            historyStore.save(accountId, item)
+        val accountId = currentAccountId() ?: return
+        historyWriteChannel.trySend(HistoryWrite(accountId, item))
+    }
+
+    private suspend fun writeHistoryBatches() {
+        while (true) {
+            val first = historyWriteChannel.receiveCatching().getOrNull() ?: break
+            val batches = linkedMapOf<String, LinkedHashMap<String, ChatFeedItem>>()
+            fun add(write: HistoryWrite) {
+                batches.getOrPut(write.accountId, ::LinkedHashMap)[write.item.id] = write.item
+            }
+            add(first)
+            var total = 1
+            val deadline = SystemClock.elapsedRealtime() + HistoryWriteBatchMillis
+            while (total < HistoryWriteBatchSize) {
+                val remaining = deadline - SystemClock.elapsedRealtime()
+                if (remaining <= 0L) break
+                val next = withTimeoutOrNull(remaining) {
+                    historyWriteChannel.receiveCatching().getOrNull()
+                } ?: break
+                add(next)
+                total += 1
+            }
+            batches.forEach { (accountId, itemsById) ->
+                historyStore.saveAll(accountId, itemsById.values.toList())
+            }
         }
     }
 
     private fun currentAccountId(): String? = sessionStore.loadUser()?.userId
 
+    private fun isFresh(lastSyncAt: Long, freshnessMillis: Long): Boolean =
+        lastSyncAt > 0L && SystemClock.elapsedRealtime() - lastSyncAt < freshnessMillis
+
+    private fun replaceMessages(items: List<ChatFeedItem>) {
+        if (messages.size == items.size && messages.zip(items).all { (current, incoming) -> current == incoming }) {
+            val itemIds = items.map { it.id }
+            if (knownMessageIds.size != items.size || !knownMessageIds.containsAll(itemIds)) {
+                knownMessageIds.clear()
+                knownMessageIds.addAll(itemIds)
+            }
+            return
+        }
+        messages.clear()
+        messages.addAll(items)
+        knownMessageIds.clear()
+        knownMessageIds.addAll(items.map { it.id })
+    }
+
+    private fun replaceOnlinePlayers(items: List<OnlinePlayer>) {
+        if (onlinePlayers.size == items.size && onlinePlayers.zip(items).all { (current, incoming) -> current == incoming }) return
+        onlinePlayers.clear()
+        onlinePlayers.addAll(items)
+    }
+
+    private fun replacePlayerDirectory(items: List<PlayerDirectoryItem>) {
+        if (playerDirectory.size == items.size && playerDirectory.zip(items).all { (current, incoming) -> current == incoming }) return
+        playerDirectory.clear()
+        playerDirectory.addAll(items)
+    }
+
+    private fun refreshPlayerDirectorySoon() {
+        if (playerDirectoryRefreshPending) return
+        playerDirectoryRefreshPending = true
+        scope.launch {
+            try {
+                val now = SystemClock.elapsedRealtime()
+                val waitMillis = (PlayerDirectoryRefreshMinIntervalMillis - (now - lastPlayerDirectoryRefreshAt)).coerceAtLeast(0L)
+                if (waitMillis > 0) delay(waitMillis)
+                refreshPlayerDirectory()
+                lastPlayerDirectoryRefreshAt = SystemClock.elapsedRealtime()
+            } finally {
+                playerDirectoryRefreshPending = false
+            }
+        }
+    }
+
     private fun mergeIncomingMessages(items: List<ChatFeedItem>): List<ChatFeedItem> {
         val result = mergeChatFeedItems(messages.toList(), items)
         if (result.inserted.isNotEmpty()) {
-            messages.clear()
-            messages.addAll(result.messages)
+            replaceMessages(result.messages)
         }
         return result.inserted
     }
 
     private fun appendLiveFeedItem(item: ChatFeedItem) {
+        if (knownMessageIds.contains(item.id)) return
+        if (appendLiveFeedItemFast(item)) {
+            saveHistory(item)
+            return
+        }
         val inserted = mergeIncomingMessages(listOf(item))
         inserted.forEach(::saveHistory)
+    }
+
+    private fun appendPendingMessage(clientMessageId: String, content: String) {
+        val user = sessionStore.loadUser() ?: return
+        if (knownMessageIds.contains(clientMessageId)) return
+        val now = Instant.now().toString()
+        val item = ChatFeedItem(
+            id = clientMessageId,
+            sender = user.gameId,
+            senderPlayerRef = user.playerRef,
+            content = content,
+            time = formatTime(now),
+            mine = true,
+            sentAt = now,
+            kind = "public_chat",
+            deliveryState = ChatDeliveryState.Pending
+        )
+        pendingClientMessages.add(clientMessageId)
+        pendingMessageTimeoutJobs.remove(clientMessageId)?.cancel()
+        pendingMessageTimeoutJobs[clientMessageId] = scope.launch {
+            delay(PendingMessageTimeoutMillis)
+            if (!pendingClientMessages.contains(clientMessageId)) return@launch
+            val pendingIndex = messages.indexOfFirst { it.id == clientMessageId }
+            if (pendingIndex >= 0) {
+                messages[pendingIndex] = messages[pendingIndex].copy(deliveryState = ChatDeliveryState.Unknown)
+            }
+            connectionMessage = "消息发送结果暂未确认，已自动同步最近聊天。"
+            syncRecentMessages(force = true)
+        }
+        if (!appendLiveFeedItemFast(item)) {
+            mergeIncomingMessages(listOf(item))
+        }
+    }
+
+    private fun confirmPendingMessage(clientMessageId: String, messageId: String) {
+        if (clientMessageId.isBlank()) return
+        pendingClientMessages.remove(clientMessageId)
+        pendingMessageTimeoutJobs.remove(clientMessageId)?.cancel()
+        val pendingIndex = messages.indexOfFirst { it.id == clientMessageId }
+        if (messageId.isBlank() || messageId == clientMessageId) {
+            if (pendingIndex >= 0) {
+                messages[pendingIndex] = messages[pendingIndex].copy(deliveryState = ChatDeliveryState.Confirmed)
+                saveHistory(messages[pendingIndex])
+            }
+            return
+        }
+        val officialIndex = messages.indexOfFirst { it.id == messageId }
+        when {
+            pendingIndex >= 0 && officialIndex >= 0 -> {
+                messages.removeAt(pendingIndex)
+                knownMessageIds.remove(clientMessageId)
+            }
+            pendingIndex >= 0 -> {
+                messages[pendingIndex] = messages[pendingIndex].copy(
+                    id = messageId,
+                    deliveryState = ChatDeliveryState.Confirmed
+                )
+                knownMessageIds.remove(clientMessageId)
+                knownMessageIds.add(messageId)
+                saveHistory(messages[pendingIndex])
+            }
+        }
+    }
+
+    private fun removePendingMessage(clientMessageId: String) {
+        if (clientMessageId.isBlank()) return
+        pendingClientMessages.remove(clientMessageId)
+        pendingMessageTimeoutJobs.remove(clientMessageId)?.cancel()
+        val index = messages.indexOfFirst { it.id == clientMessageId }
+        if (index >= 0) {
+            messages.removeAt(index)
+            knownMessageIds.remove(clientMessageId)
+        }
+    }
+
+    private fun reconcilePendingMessages(incoming: List<ChatFeedItem>) {
+        if (pendingClientMessages.isEmpty() || incoming.isEmpty()) return
+        val availableOfficial = incoming.filter { it.mine }.toMutableList()
+        pendingClientMessages.toList().forEach { clientMessageId ->
+            val pendingIndex = messages.indexOfFirst { it.id == clientMessageId }
+            if (pendingIndex < 0) return@forEach
+            val pending = messages[pendingIndex]
+            val match = availableOfficial
+                .filter { it.content == pending.content }
+                .mapNotNull { official ->
+                    val distance = timestampDistanceMillis(pending.sentAt, official.sentAt) ?: return@mapNotNull null
+                    official to distance
+                }
+                .filter { (_, distance) -> distance <= PendingMessageMatchWindowMillis }
+                .minByOrNull { (_, distance) -> distance }
+                ?.first
+                ?: return@forEach
+            availableOfficial.remove(match)
+            messages.removeAt(pendingIndex)
+            knownMessageIds.remove(clientMessageId)
+            pendingClientMessages.remove(clientMessageId)
+            pendingMessageTimeoutJobs.remove(clientMessageId)?.cancel()
+        }
+    }
+
+    private fun timestampDistanceMillis(first: String?, second: String?): Long? {
+        val firstValue = first ?: return null
+        val secondValue = second ?: return null
+        return runCatching {
+            kotlin.math.abs(Duration.between(Instant.parse(firstValue), Instant.parse(secondValue)).toMillis())
+        }.getOrNull()
+    }
+
+    private fun appendLiveFeedItemFast(item: ChatFeedItem): Boolean {
+        val last = messages.lastOrNull()
+        if (last != null && !isChatFeedItemAtOrAfter(last, item)) return false
+
+        if (messages.size >= DefaultChatFeedMaxMessages) {
+            val removeCount = messages.size - DefaultChatFeedMaxMessages + 1
+            repeat(removeCount) {
+                val removed = messages.removeAt(0)
+                knownMessageIds.remove(removed.id)
+            }
+        }
+        messages.add(item)
+        knownMessageIds.add(item.id)
+        return true
     }
 
     private fun handleUnauthorized(result: RepoResult.Error): Boolean {
@@ -708,9 +1029,6 @@ class ChatRepository(
             kind = message.kind
         )
     }
-
-    private fun JsonObject.payloadObject(key: String): JsonObject? =
-        getAsJsonObject("payload")?.getAsJsonObject(key)
 
     private fun stripMinecraftFormattingCodes(value: String): String {
         return value
@@ -791,4 +1109,3 @@ fun playerSummary(player: ResolvedPlayerRef): PlayerSummary =
         registered = player.registered,
         source = player.source
     )
-

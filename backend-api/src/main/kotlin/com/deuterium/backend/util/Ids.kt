@@ -1,4 +1,4 @@
-﻿package com.deuterium.backend.util
+package com.deuterium.backend.util
 
 import java.security.SecureRandom
 import java.security.MessageDigest
@@ -12,6 +12,9 @@ object Ids {
     fun requestId(): String = "req_" + UUID.randomUUID().toString().replace("-", "")
     fun userId(): String = "usr_" + shortToken()
     fun sessionId(): String = "ses_" + shortToken()
+    fun oidcAuthorizationCodeId(): String = "oidc_code_" + shortToken()
+    fun oidcAccessTokenId(): String = "oidc_token_" + shortToken()
+    fun oidcWebSessionId(): String = "oidc_web_" + shortToken()
     fun verificationId(): String = "ver_" + shortToken()
     fun playerRef(): String = "player_" + shortToken()
     fun transferId(): String = "tr_" + shortToken()
@@ -23,6 +26,14 @@ object Ids {
     }
     fun messageId(): String = "msg_" + shortToken()
     fun eventId(): String = "evt_" + shortToken()
+    fun aiConversationId(): String = "aic_" + shortToken()
+    fun aiMessageId(): String = "aim_" + shortToken()
+    fun aiPurchaseId(): String = "aip_" + shortToken()
+    fun aiAuditId(): String = "aia_" + shortToken()
+    fun aiRequestExchangeId(): String = "aix_" + shortToken()
+    fun aiMemoryId(): String = "aimem_" + shortToken()
+    fun aiKnowledgeId(): String = "aik_" + shortToken()
+    fun aiPromptId(): String = "aiprompt_" + shortToken()
     fun bridgeMessageId(): String = "bridge_msg_" + shortToken()
     fun token(prefix: String): String = prefix + "_" + longToken()
 
@@ -38,4 +49,3 @@ object Ids {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
     }
 }
-

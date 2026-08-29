@@ -1,4 +1,4 @@
-﻿# DeuteriumBridge Minecraft Plugin
+# DeuteriumBridge Minecraft Plugin
 
 Target server: Mohist 1.20.1 with Java 17.
 
@@ -24,5 +24,4 @@ Install:
 Do not commit production `config.yml` values.
 
 The plugin bridge port `28658` should stay local-only and should not be exposed through the intranet tunnel.
-
 

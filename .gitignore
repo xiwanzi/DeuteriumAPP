@@ -4,6 +4,7 @@ DeuteriumAPP-public/
 
 # Gradle
 .gradle/
+**/.gradle-home/
 build/
 **/build/
 **/.gradle/

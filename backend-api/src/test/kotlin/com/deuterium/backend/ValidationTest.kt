@@ -1,4 +1,4 @@
-﻿package com.deuterium.backend
+package com.deuterium.backend
 
 import com.deuterium.backend.util.Validation
 import com.deuterium.backend.web.ApiException
@@ -34,3 +34,4 @@ class ValidationTest {
         assertFailsWith<ApiException> { Validation.password("x".repeat(65)) }
     }
 }
+

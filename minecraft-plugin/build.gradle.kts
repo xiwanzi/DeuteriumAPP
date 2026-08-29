@@ -16,16 +16,6 @@ tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
 }
 
-sourceSets {
-    main {
-        resources {
-            if (file("src/main/local-resources").exists()) {
-                setSrcDirs(listOf("src/main/local-resources", "src/main/resources"))
-            }
-        }
-    }
-}
-
 tasks.processResources {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }

@@ -1,4 +1,4 @@
-﻿# DeuteriumAPP Android 前端维护文档
+# DeuteriumAPP Android 前端维护文档
 
 本文面向后续 Android 前端维护者，说明当前 `android-app` 的工程结构、运行配置、核心数据流、维护边界和常见改动方式。本文只覆盖 Android 前端；后端 API、Minecraft 插件桥和服务端经济系统以 `docs/contracts/` 与后端仓库实现为准。
 
@@ -7,7 +7,7 @@
 - 产品形态：原生 Android App。
 - 技术栈：Kotlin、Jetpack Compose、Material 3、Retrofit、OkHttp、Gson、SQLiteOpenHelper。
 - 包名：`com.deuterium.app`。
-- 当前版本：`versionCode 5` / `versionName 1.0.3`。
+- 当前版本：`versionCode 6` / `versionName 1.0.4`。
 - 最低版本：`minSdk 26`。
 - 目标版本：`targetSdk 35`。
 - 工程形态：单 Activity、单 app module，目前没有拆 Gradle 多模块。
@@ -69,7 +69,7 @@ android-app/app/build/outputs/apk/release/app-release-unsigned.apk
 
 Debug 包是 Android Debug 签名，可用于本机或小范围测试，不适合作为正式分发包。Release 当前产物为 unsigned APK，正式发布前必须补正式签名配置。
 
-当前 debug 安装包版本为 `versionCode 5` / `versionName 1.0.3`，路径为：
+当前 debug 安装包版本为 `versionCode 6` / `versionName 1.0.4`，路径为：
 
 ```text
 android-app/app/build/outputs/apk/debug/app-debug.apk
@@ -88,16 +88,16 @@ C:\DeuteriumAPP\.tools\android-sdk\platform-tools\adb.exe install -r C:\Deuteriu
 Debug 当前用于内网穿透联调：
 
 ```text
-HTTP_BASE_URL = http://example.com:80/api/v1/
-CHAT_WS_URL   = ws://example.com:80/api/v1/chat/ws
+HTTP_BASE_URL = http://deuterium.s.odn.cc:80/api/v1/
+CHAT_WS_URL   = ws://deuterium.s.odn.cc:80/api/v1/chat/ws
 usesCleartextTraffic = true
 ```
 
 Release 当前用于生产配置：
 
 ```text
-HTTP_BASE_URL = https://example.com/api/v1/
-CHAT_WS_URL   = wss://example.com/api/v1/chat/ws
+HTTP_BASE_URL = https://deuterium.s.odn.cc/api/v1/
+CHAT_WS_URL   = wss://deuterium.s.odn.cc/api/v1/chat/ws
 usesCleartextTraffic = false
 ```
 
@@ -452,4 +452,3 @@ C:\DeuteriumAPP\.tools\android-sdk\platform-tools\adb.exe install -r C:\Deuteriu
 - 本地聊天历史使用 SQLiteOpenHelper，足够轻量；如果后续需要复杂查询、分页、迁移，可再评估 Room。
 - Release APK 仍未配置正式签名。
 - 服务器 Pay 流水需要后端并入 `/wallet/records`，前端不能自行补全。
-

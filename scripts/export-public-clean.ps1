@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$OutputRoot,
     [string]$ZipPath,
     [switch]$NoZip

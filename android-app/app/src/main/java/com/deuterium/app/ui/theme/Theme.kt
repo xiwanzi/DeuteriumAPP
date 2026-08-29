@@ -1,4 +1,4 @@
-﻿package com.deuterium.app.ui.theme
+package com.deuterium.app.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -303,4 +303,3 @@ private fun darkColors(preset: DeuteriumColorPreset): ColorScheme {
         )
     }
 }
-

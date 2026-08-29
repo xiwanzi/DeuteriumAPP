@@ -1,4 +1,4 @@
-﻿package com.deuterium.backend
+package com.deuterium.backend
 
 import com.deuterium.backend.config.AppConfig
 import com.deuterium.backend.db.DatabaseFactory

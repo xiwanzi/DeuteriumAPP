@@ -1,4 +1,4 @@
-﻿package com.deuterium.backend
+package com.deuterium.backend
 
 import com.deuterium.backend.util.Secrets
 import kotlin.test.Test
@@ -20,5 +20,4 @@ class SecurityTest {
         assertNotEquals(Secrets.sha256(value, "pepper-a"), Secrets.sha256(value, "pepper-b"))
     }
 }
-
 

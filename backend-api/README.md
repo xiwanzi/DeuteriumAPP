@@ -1,4 +1,4 @@
-﻿# DeuteriumAPP Backend API
+# DeuteriumAPP Backend API
 
 Backend service for DeuteriumAPP.
 
@@ -48,7 +48,7 @@ Inside the generated runtime directory:
 .\start-backend.bat
 ```
 
-Run `migrate-db.bat` before replacing a production backend. Current migrations include the V4 maintenance indexes used by the expired-data cleanup task.
+Run `migrate-db.bat` before replacing a production backend. Current migrations include the V4 maintenance indexes used by the expired-data cleanup task and the V5 OIDC Provider tables used by Wiki.js login.
 
 The backend starts a lightweight cleanup loop every 6 hours. It removes expired sessions, old verification contexts, stale login failures, chat records older than `chat.historyRetentionDays`, and old server events. This does not require Android or Minecraft plugin changes.
 
@@ -97,3 +97,35 @@ Health checks:
 /health/live
 /health/ready
 ```
+
+## Wiki.js OIDC Provider
+
+OIDC is disabled by default. When enabled, the backend also exposes these routes on the public `28657` server:
+
+```text
+/.well-known/openid-configuration
+/.well-known/jwks.json
+/oauth/authorize
+/oauth/login
+/oauth/token
+/oauth/userinfo
+/oauth/logout
+```
+
+Minimum config keys:
+
+```properties
+oidc.enabled=true
+oidc.issuer=http://authdeuterium.s.odn.cc
+oidc.clientId=wikijs
+oidc.clientSecretHash=<sha256-hex-of-client-secret>
+oidc.redirectUri=https://wiki.deuterium.cafe/login/oidc/callback
+oidc.signingKeyPath=config/oidc-signing-key.json
+oidc.allowInsecureHttp=true
+```
+
+Use HTTPS for any public password-login origin. `oidc.allowInsecureHttp=true` is only for internal HTTP-only environments.
+
+Keep `config/oidc-signing-key.json` when replacing runtime directories. Do not commit the Wiki.js client secret, the filled `application.conf`, or the OIDC signing private key.
+
+Full contract: `docs/contracts/oidc-provider-v1.md`.

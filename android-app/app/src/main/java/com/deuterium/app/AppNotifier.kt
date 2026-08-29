@@ -1,4 +1,4 @@
-﻿package com.deuterium.app
+package com.deuterium.app
 
 import android.Manifest
 import android.app.Notification
@@ -110,4 +110,3 @@ class AppNotifier(private val context: Context) {
         const val CHANNEL_MENTION = "chat_mentions"
     }
 }
-

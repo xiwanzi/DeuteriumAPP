@@ -1,4 +1,4 @@
-﻿# Android 可交互原型实施计划 v1
+# Android 可交互原型实施计划 v1
 
 ## 1. 文档定位
 
@@ -117,4 +117,3 @@ Android 工程采用单 App 模块，包名为 `com.deuterium.app`，最小 Andr
 - 后续是否将原型状态层迁移到 ViewModel。
 - 真实后端 API 接入时的接口契约。
 - Android 导航、状态管理、网络库和持久化方案是否需要新增 ADR。
-

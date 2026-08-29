@@ -1,4 +1,4 @@
-﻿pluginManagement {
+pluginManagement {
     repositories {
         mavenCentral()
         gradlePluginPortal()
@@ -13,5 +13,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "deuterium-backend-api"
-
 

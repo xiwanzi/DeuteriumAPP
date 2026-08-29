@@ -1,4 +1,4 @@
-﻿package com.deuterium.backend
+package com.deuterium.backend
 
 import com.deuterium.backend.db.AppPresence
 import com.deuterium.backend.db.ChatMessages
@@ -21,6 +21,7 @@ import com.deuterium.backend.repository.LoginFailureRepository
 import com.deuterium.backend.repository.MaintenanceRepository
 import com.deuterium.backend.repository.PlayerRefRepository
 import com.deuterium.backend.repository.WalletRepository
+import org.junit.jupiter.api.parallel.ResourceLock
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.SchemaUtils
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
@@ -41,6 +42,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
+@ResourceLock("exposed-default-database")
 class RepositoryPerformanceTest {
     @Test
     fun `wallet balance upsert uses one database statement per write`() = withRepositoryDatabase {

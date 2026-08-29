@@ -1,4 +1,4 @@
-﻿package com.deuterium.backend.chat
+package com.deuterium.backend.chat
 
 import com.deuterium.backend.model.ChatMessage
 import com.deuterium.backend.model.OnlinePlayer
@@ -246,4 +246,3 @@ data class SendResultPayload(
 
 @Serializable
 data class WsErrorPayload(val code: String, val message: String)
-

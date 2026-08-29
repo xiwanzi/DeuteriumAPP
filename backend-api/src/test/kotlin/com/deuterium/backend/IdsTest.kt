@@ -1,4 +1,4 @@
-﻿package com.deuterium.backend
+package com.deuterium.backend
 
 import com.deuterium.backend.util.Ids
 import kotlin.test.Test
@@ -19,4 +19,3 @@ class IdsTest {
         assertTrue(expense.length <= 40)
     }
 }
-

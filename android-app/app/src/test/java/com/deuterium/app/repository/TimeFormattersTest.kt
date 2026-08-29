@@ -1,4 +1,4 @@
-﻿package com.deuterium.app.repository
+package com.deuterium.app.repository
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -70,4 +70,3 @@ class TimeFormattersTest {
         assertFalse(shouldNotifyWalletRecord(walletNotificationsEnabled = false, appForeground = false))
     }
 }
-

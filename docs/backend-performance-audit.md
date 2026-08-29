@@ -1,4 +1,4 @@
-﻿# DeuteriumAPP 后端性能审计报告（第二轮）
+# DeuteriumAPP 后端性能审计报告（第二轮）
 
 > 审计范围：`backend-api/` 全部 Kotlin 源码、SQL 迁移文件、测试文件
 > 第一轮审计日期：2026-05-03

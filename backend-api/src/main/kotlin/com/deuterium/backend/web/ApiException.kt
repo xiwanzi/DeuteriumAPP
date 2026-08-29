@@ -1,4 +1,4 @@
-﻿package com.deuterium.backend.web
+package com.deuterium.backend.web
 
 class ApiException(
     val code: String,
@@ -16,5 +16,4 @@ class ApiException(
 class PluginBridgeUnavailable : RuntimeException("Plugin bridge unavailable")
 
 class PluginBridgeTimeout : RuntimeException("Plugin bridge request timed out")
-
 

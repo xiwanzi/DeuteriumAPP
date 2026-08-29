@@ -1,4 +1,4 @@
-﻿pluginManagement {
+pluginManagement {
     repositories {
         maven {
             url = uri("https://maven.aliyun.com/repository/google")
@@ -48,4 +48,3 @@ dependencyResolutionManagement {
 
 rootProject.name = "DeuteriumAPP"
 include(":app")
-

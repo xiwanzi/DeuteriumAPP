@@ -1,4 +1,4 @@
-﻿package com.deuterium.plugin;
+package com.deuterium.plugin;
 
 import net.milkbowl.vault.economy.Economy;
 import org.bukkit.Bukkit;

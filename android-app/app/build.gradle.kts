@@ -1,4 +1,4 @@
-﻿plugins {
+plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -13,20 +13,35 @@ android {
         applicationId = "com.deuterium.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.0.3"
+        versionCode = 7
+        versionName = "1.0.5"
     }
 
     buildTypes {
         debug {
-            buildConfigField("String", "HTTP_BASE_URL", "\"http://example.com:80/api/v1/\"")
-            buildConfigField("String", "CHAT_WS_URL", "\"ws://example.com:80/api/v1/chat/ws\"")
+            buildConfigField("String", "HTTP_BASE_URL", "\"http://deuterium.s.odn.cc:80/api/v1/\"")
+            buildConfigField("String", "CHAT_WS_URL", "\"ws://deuterium.s.odn.cc:80/api/v1/chat/ws\"")
+            buildConfigField("boolean", "CANARY_UI", "false")
             manifestPlaceholders["cleartextTraffic"] = "true"
+            manifestPlaceholders["appLabel"] = "Deuterium"
+        }
+        create("canary") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".canary"
+            versionNameSuffix = "-canary.26063"
+            matchingFallbacks += listOf("debug")
+            buildConfigField("String", "HTTP_BASE_URL", "\"http://deuterium.s.odn.cc:80/api/v1/\"")
+            buildConfigField("String", "CHAT_WS_URL", "\"ws://deuterium.s.odn.cc:80/api/v1/chat/ws\"")
+            buildConfigField("boolean", "CANARY_UI", "true")
+            manifestPlaceholders["cleartextTraffic"] = "true"
+            manifestPlaceholders["appLabel"] = "Deuterium Canary"
         }
         release {
-            buildConfigField("String", "HTTP_BASE_URL", "\"https://example.com/api/v1/\"")
-            buildConfigField("String", "CHAT_WS_URL", "\"wss://example.com/api/v1/chat/ws\"")
+            buildConfigField("String", "HTTP_BASE_URL", "\"https://deuterium.s.odn.cc/api/v1/\"")
+            buildConfigField("String", "CHAT_WS_URL", "\"wss://deuterium.s.odn.cc/api/v1/chat/ws\"")
+            buildConfigField("boolean", "CANARY_UI", "false")
             manifestPlaceholders["cleartextTraffic"] = "false"
+            manifestPlaceholders["appLabel"] = "Deuterium"
         }
     }
 
@@ -43,6 +58,15 @@ android {
     kotlin {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        }
+    }
+}
+
+androidComponents {
+    onVariants(selector().withBuildType("canary")) { variant ->
+        variant.outputs.forEach { output ->
+            output.versionCode.set(26063)
+            output.versionName.set("1.0.4-canary.26063")
         }
     }
 }
@@ -67,4 +91,3 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
 }
-

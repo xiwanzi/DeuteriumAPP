@@ -1,4 +1,4 @@
-﻿# Android 前端 AI 构建指南
+# Android 前端 AI 构建指南
 
 本文档面向后续接手 DeuteriumAPP Android 前端的 AI 代理，说明当前机器上的构建环境、验证命令、版本号推进方式和 APK 交付路径。
 
@@ -30,7 +30,7 @@ C:\DeuteriumAPP\android-app
 - `targetSdk`: 35。
 - `compileSdk`: 36。
 - `buildToolsVersion`: 35.0.0。
-- 当前版本：`versionCode 5` / `versionName 1.0.3`。
+- 当前版本：`versionCode 6` / `versionName 1.0.4`。
 
 本机 Android SDK 路径：
 
@@ -123,8 +123,8 @@ android-app/app/build.gradle.kts
 
 ```kotlin
 defaultConfig {
-    versionCode = 5
-    versionName = "1.0.3"
+    versionCode = 6
+    versionName = "1.0.4"
 }
 ```
 
@@ -160,16 +160,16 @@ C:\DeuteriumAPP\.tools\android-sdk\platform-tools\adb.exe install -r C:\Deuteriu
 Debug 当前使用 HTTP/80 联调地址：
 
 ```text
-HTTP_BASE_URL = http://example.com:80/api/v1/
-CHAT_WS_URL   = ws://example.com:80/api/v1/chat/ws
+HTTP_BASE_URL = http://deuterium.s.odn.cc:80/api/v1/
+CHAT_WS_URL   = ws://deuterium.s.odn.cc:80/api/v1/chat/ws
 usesCleartextTraffic = true
 ```
 
 Release 当前使用 HTTPS/WSS：
 
 ```text
-HTTP_BASE_URL = https://example.com/api/v1/
-CHAT_WS_URL   = wss://example.com/api/v1/chat/ws
+HTTP_BASE_URL = https://deuterium.s.odn.cc/api/v1/
+CHAT_WS_URL   = wss://deuterium.s.odn.cc/api/v1/chat/ws
 usesCleartextTraffic = false
 ```
 
@@ -208,4 +208,3 @@ AI 代理构建 APK 时应遵守：
 - 不把 App 改成直连数据库或直连 Minecraft 插件。
 - 构建前后说明实际执行的命令、版本号和 APK 绝对路径。
 - 如果只构建 APK，不要顺手重构 UI 或修改后端合同。
-

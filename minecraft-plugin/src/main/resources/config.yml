@@ -1,4 +1,4 @@
-﻿backend:
+backend:
   ws-url: "ws://127.0.0.1:28658/bridge/plugin/ws"
   token: "CHANGE_ME"
   reconnect-seconds: 5
@@ -18,4 +18,3 @@ events:
   server-say: true
   join: true
   quit: true
-

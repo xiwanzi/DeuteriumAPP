@@ -1,4 +1,4 @@
-﻿package com.deuterium.backend.web
+package com.deuterium.backend.web
 
 import com.deuterium.backend.model.ApiErrorBody
 import com.deuterium.backend.model.ApiErrorResponse
@@ -53,4 +53,3 @@ fun ApplicationCall.bearerToken(): String? {
     val header = request.headers[HttpHeaders.Authorization] ?: return null
     return header.removePrefix("Bearer").trim().takeIf { it.isNotBlank() }
 }
-

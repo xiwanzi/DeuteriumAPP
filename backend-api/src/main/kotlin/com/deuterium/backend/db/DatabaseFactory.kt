@@ -1,4 +1,4 @@
-﻿package com.deuterium.backend.db
+package com.deuterium.backend.db
 
 import com.deuterium.backend.config.DatabaseConfig
 import com.zaxxer.hikari.HikariConfig
@@ -9,6 +9,23 @@ import java.sql.DriverManager
 
 object DatabaseFactory {
     private val resetTables = listOf(
+        "ai_admin_events",
+        "ai_qq_groups",
+        "ai_request_audits",
+        "ai_knowledge_chunks",
+        "ai_knowledge_documents",
+        "ai_knowledge_items",
+        "ai_memory_items",
+        "ai_request_exchanges",
+        "ai_messages",
+        "ai_conversations",
+        "ai_purchases",
+        "ai_quota_usage",
+        "ai_entitlements",
+        "ai_plans",
+        "ai_settings",
+        "ai_model_configs",
+        "ai_prompt_versions",
         "player_follows",
         "app_presence",
         "wallet_records",
@@ -48,6 +65,7 @@ object DatabaseFactory {
             .dataSource(config.jdbcUrl, config.user, config.password)
             .locations("classpath:db/migration")
             .baselineOnMigrate(true)
+            .ignoreMigrationPatterns("versioned:missing")
             .load()
             .migrate()
     }
@@ -98,4 +116,3 @@ object DatabaseFactory {
         }
     }
 }
-

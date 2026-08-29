@@ -1,4 +1,4 @@
-﻿# Getting Started / 快速开始
+# Getting Started / 快速开始
 
 Last updated / 更新时间：2026-05-02
 
@@ -257,4 +257,3 @@ ws://127.0.0.1:28658/bridge/plugin/ws
 - Keep backend additions backward-compatible whenever possible.
 - Database schema changes must use Flyway migrations.
 - Do not commit real secrets, tokens, passwords, or keystores.
-

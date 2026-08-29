@@ -1,8 +1,9 @@
-﻿package com.deuterium.backend.bridge
+package com.deuterium.backend.bridge
 
 import com.deuterium.backend.chat.AppChatHub
 import com.deuterium.backend.config.PluginBridgeConfig
 import com.deuterium.backend.model.OnlinePlayer
+import com.deuterium.backend.model.ChatMessage
 import com.deuterium.backend.repository.AccountRepository
 import com.deuterium.backend.repository.ChatRepository
 import com.deuterium.backend.repository.PlayerRefRepository
@@ -58,6 +59,7 @@ class WebSocketPluginBridge(
     private val pending = ConcurrentHashMap<String, CompletableDeferred<BridgeEnvelope>>()
     private val eventScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val events = Channel<BridgeEnvelope>(Channel.UNLIMITED)
+    var onServerChatMessage: suspend (ChatMessage) -> Unit = {}
 
     init {
         eventScope.launch {
@@ -176,12 +178,30 @@ class WebSocketPluginBridge(
         return WalletTransferResult(status = p.string("status"), reason = p.stringOrNull("reason"))
     }
 
+    override suspend fun walletDebit(request: WalletDebitRequest): WalletDebitResult {
+        val response = request("wallet.debit.request", buildJsonObject {
+            put("debitId", request.debitId)
+            put("idempotencyKey", request.idempotencyKey)
+            put("serverUuid", request.serverUuid)
+            put("amount", request.amount.setScale(2).toPlainString())
+            put("currency", request.currency)
+            request.note?.let { put("note", it) }
+        })
+        val p = response.payload.jsonObject
+        return WalletDebitResult(
+            status = p.string("status"),
+            reason = p.stringOrNull("reason"),
+            balanceAfter = p.stringOrNull("balanceAfter")?.toBigDecimal()
+        )
+    }
+
     override suspend fun sendAppChat(request: AppChatRequest): AppChatResult {
         val response = request("chat.appMessage.request", buildJsonObject {
             put("appMessageId", request.appMessageId)
             put("senderServerUuid", request.senderServerUuid)
             put("senderGameId", request.senderGameId)
             put("content", request.content)
+            put("allowVirtualSender", request.allowVirtualSender)
         })
         return AppChatResult(response.payload.jsonObject.string("status"))
     }
@@ -283,6 +303,10 @@ class WebSocketPluginBridge(
             )
         }
         chatHub.broadcastMessage(message)
+        eventScope.launch {
+            runCatching { onServerChatMessage(message) }
+                .onFailure { logger.error("Public chat AI trigger failed messageId={}", message.messageId, it) }
+        }
     }
 
     private suspend fun handleServerEvent(envelope: BridgeEnvelope) {
@@ -433,6 +457,21 @@ class WebSocketPluginBridge(
         walletEvents.forEach { (userId, record) -> chatHub.sendWalletRecord(userId, record) }
     }
 
+    private suspend fun sendReply(request: BridgeEnvelope, type: String, payload: JsonElement) {
+        val active = mutex.withLock { session } ?: return
+        active.send(
+            json.encodeToString(
+                BridgeEnvelope(
+                    type = type,
+                    messageId = Ids.bridgeMessageId(),
+                    replyTo = request.messageId,
+                    sentAt = Instant.now().toString(),
+                    payload = payload
+                )
+            )
+        )
+    }
+
     private fun kotlinx.serialization.json.JsonObject.string(key: String): String =
         this[key]?.jsonPrimitive?.content ?: ""
 
@@ -461,4 +500,3 @@ data class BridgeEnvelope(
     val sentAt: String,
     val payload: JsonElement,
 )
-

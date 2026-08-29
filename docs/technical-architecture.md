@@ -1,6 +1,6 @@
-﻿# DeuteriumAPP Technical Architecture / 技术架构文档
+# DeuteriumAPP Technical Architecture / 技术架构文档
 
-Last updated / 更新时间：2026-05-02
+Last updated / 更新时间：2026-06-06
 
 ## 1. 中文版
 
@@ -13,7 +13,7 @@ Last updated / 更新时间：2026-05-02
 DeuteriumAPP 由三个运行模块组成：
 
 - Android App：原生 Android 客户端，面向玩家。负责界面、输入、通知、本地聊天历史、网络调用和 WebSocket 连接。
-- Backend API：Kotlin/Ktor 后端。负责账号、会话、钱包、转账、聊天、玩家目录、版本检查、数据库持久化和插件桥编排。
+- Backend API：Kotlin/Ktor 后端。负责账号、会话、钱包、转账、聊天、玩家目录、版本检查、Wiki.js OIDC 登录、数据库持久化和插件桥编排。
 - Minecraft Plugin Bridge：Java 插件。运行在 Minecraft 服务器内，通过 WebSocket 连接后端，并调用 Bukkit/Spigot、Vault、XConomy 等服务器能力。
 
 模块关系：
@@ -26,6 +26,10 @@ Backend API
 Minecraft Plugin Bridge
   Bukkit/Spigot + Vault/XConomy
 Minecraft Server
+
+Wiki.js
+  OIDC Authorization Code Flow
+Backend API
 ```
 
 ### 1.3 技术栈
@@ -95,6 +99,13 @@ Backend App WebSocket seam:
 - `AppChatHub` 维护 App WebSocket session、前后台状态、广播、@ 提及、钱包事件和失败连接清理。
 - 后端使用标准 WebSocket ping/pong 探活清理半开连接，不新增业务心跳消息。
 
+Backend OIDC provider:
+
+- `OidcRoutes` 暴露 `/.well-known/*` 和 `/oauth/*`。
+- `OidcService` 负责 authorization request 校验、OIDC 浏览器 session、authorization code、access token、ID Token 和 userinfo。
+- `OidcRepository` 持久化 OIDC client、authorization code、access token 和 browser session。
+- OIDC 登录复用 Deuterium 账号密码校验，但与 Android APP session 分表隔离。
+
 Database seam:
 
 - Exposed table 定义在 `Tables.kt`。
@@ -141,6 +152,16 @@ Database seam:
 2. Backend 只读取配置 `app.latestVersionCode` 和 `app.latestVersionName`。
 3. 不访问数据库。
 
+Wiki.js OIDC 登录：
+
+1. Wiki.js 跳转到 `GET /oauth/authorize`，使用 Authorization Code Flow。
+2. Backend 校验 `client_id`、精确 `redirect_uri` 和 `openid` scope。
+3. 未登录浏览器返回后端内置登录页，玩家用 Deuterium APP 账号密码登录。
+4. Backend 创建独立 OIDC browser session，并签发一次性 authorization code。
+5. Wiki.js 调用 `POST /oauth/token` 换取 `access_token` 和 RS256 `id_token`。
+6. Wiki.js 调用 `GET /oauth/userinfo` 获取 `sub`、`email`、`displayName` 等 claim。
+7. Wiki.js 通过 `autoEnrollGroups=[4]` 把用户加入 `Deuterium Users` 组。
+
 ### 1.6 公共接口
 
 主要 HTTP interface：
@@ -174,7 +195,17 @@ WebSocket interface：
 - App: `GET /api/v1/chat/ws`
 - Plugin: `GET /bridge/plugin/ws`
 
-完整字段以 `docs/contracts/app-backend-api-v1.md` 和 `docs/contracts/openapi-v1.yaml` 为准。
+Wiki.js OIDC interface：
+
+- `GET /.well-known/openid-configuration`
+- `GET /.well-known/jwks.json`
+- `GET /oauth/authorize`
+- `POST /oauth/login`
+- `POST /oauth/token`
+- `GET /oauth/userinfo`
+- `GET /oauth/logout`
+
+完整字段以 `docs/contracts/app-backend-api-v1.md`、`docs/contracts/openapi-v1.yaml` 和 `docs/contracts/oidc-provider-v1.md` 为准。
 
 ### 1.7 配置与安全
 
@@ -185,6 +216,8 @@ WebSocket interface：
 - session pepper
 - verification pepper
 - plugin bridge token
+- OIDC client secret
+- OIDC signing private key
 - Android signing keystore
 - APK/JAR/ZIP 交付物
 - `delivery/`
@@ -236,6 +269,7 @@ cd C:\DeuteriumAPP
 
 - Android release signing 尚未配置。
 - Debug App 仍是测试分发形态，不应作为正式发布包。
+- Wiki.js OIDC 当前可用的内部入口为 HTTP-only `http://authdeuterium.s.odn.cc`；公网密码登录应迁移到 HTTPS issuer 后再作为正式公开入口。
 - 后端-only WebSocket 探活可清理半开连接，但“回前台立即强制重连”仍需要 Android 端小改。
 - `MainActivity.kt` 和 `AppRepositories.kt` 仍偏大，未来可按页面和 feature module 继续加深 interface。
 
@@ -250,7 +284,7 @@ This document records the technical architecture, runtime modules, core data flo
 DeuteriumAPP has three runtime modules:
 
 - Android App: the native player-facing client. It owns UI, input, notifications, local chat history, network calls, and WebSocket connections.
-- Backend API: the Kotlin/Ktor backend. It owns accounts, sessions, wallet, transfers, chat, player directory, update checks, persistence, and plugin bridge orchestration.
+- Backend API: the Kotlin/Ktor backend. It owns accounts, sessions, wallet, transfers, chat, player directory, update checks, Wiki.js OIDC login, persistence, and plugin bridge orchestration.
 - Minecraft Plugin Bridge: the Java plugin running inside the Minecraft server. It connects to the backend over WebSocket and uses Bukkit/Spigot, Vault, and XConomy capabilities.
 
 Module relationship:
@@ -263,6 +297,10 @@ Backend API
 Minecraft Plugin Bridge
   Bukkit/Spigot + Vault/XConomy
 Minecraft Server
+
+Wiki.js
+  OIDC Authorization Code Flow
+Backend API
 ```
 
 ### 2.3 Technology Stack
@@ -332,6 +370,13 @@ Backend App WebSocket seam:
 - `AppChatHub` owns App WebSocket sessions, foreground state, broadcasts, @ mentions, wallet events, and failed connection cleanup.
 - Backend WebSocket keepalive uses standard ping/pong frames. It does not introduce business heartbeat messages.
 
+Backend OIDC provider:
+
+- `OidcRoutes` exposes `/.well-known/*` and `/oauth/*`.
+- `OidcService` owns authorization request validation, OIDC browser sessions, authorization codes, access tokens, ID Tokens, and userinfo.
+- `OidcRepository` persists OIDC clients, authorization codes, access tokens, and browser sessions.
+- OIDC login reuses Deuterium account password verification, but stores sessions separately from Android APP sessions.
+
 Database seam:
 
 - Exposed table definitions live in `Tables.kt`.
@@ -378,6 +423,16 @@ Update check:
 2. The backend only reads `app.latestVersionCode` and `app.latestVersionName` from config.
 3. The endpoint does not query the database.
 
+Wiki.js OIDC login:
+
+1. Wiki.js redirects to `GET /oauth/authorize` using Authorization Code Flow.
+2. The backend validates `client_id`, exact `redirect_uri`, and the `openid` scope.
+3. If the browser is not logged in, the backend returns its minimal login page and the player logs in with a Deuterium APP account password.
+4. The backend creates a separate OIDC browser session and issues a one-time authorization code.
+5. Wiki.js calls `POST /oauth/token` to exchange the code for an `access_token` and RS256 `id_token`.
+6. Wiki.js calls `GET /oauth/userinfo` to read claims such as `sub`, `email`, and `displayName`.
+7. Wiki.js uses `autoEnrollGroups=[4]` to add users to the `Deuterium Users` group.
+
 ### 2.6 Public Interfaces
 
 Main HTTP interface:
@@ -411,7 +466,17 @@ WebSocket interface:
 - App: `GET /api/v1/chat/ws`
 - Plugin: `GET /bridge/plugin/ws`
 
-For full field-level contracts, see `docs/contracts/app-backend-api-v1.md` and `docs/contracts/openapi-v1.yaml`.
+Wiki.js OIDC interface:
+
+- `GET /.well-known/openid-configuration`
+- `GET /.well-known/jwks.json`
+- `GET /oauth/authorize`
+- `POST /oauth/login`
+- `POST /oauth/token`
+- `GET /oauth/userinfo`
+- `GET /oauth/logout`
+
+For full field-level contracts, see `docs/contracts/app-backend-api-v1.md`, `docs/contracts/openapi-v1.yaml`, and `docs/contracts/oidc-provider-v1.md`.
 
 ### 2.7 Configuration And Security
 
@@ -422,6 +487,8 @@ The public release only keeps example config. These files and values must not be
 - session pepper
 - verification pepper
 - plugin bridge token
+- OIDC client secret
+- OIDC signing private key
 - Android signing keystore
 - APK/JAR/ZIP delivery artifacts
 - `delivery/`
@@ -473,6 +540,6 @@ The script creates a public copy and scans for currently known production secret
 
 - Android release signing is not configured.
 - Debug Android builds are test artifacts and should not be treated as public production releases.
+- The currently verified Wiki.js OIDC internal origin is HTTP-only `http://authdeuterium.s.odn.cc`; public password login should move to an HTTPS issuer before being treated as a formal public entry point.
 - Backend-only WebSocket keepalive can clean up half-open connections, but deterministic "reconnect immediately on foreground" still needs a small Android patch.
 - `MainActivity.kt` and `AppRepositories.kt` are still large. Future work can deepen their interfaces by splitting UI and feature modules.
-

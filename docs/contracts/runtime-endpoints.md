@@ -1,4 +1,4 @@
-﻿# DeuteriumAPP 运行端口与 Base URL 约定 v1
+# DeuteriumAPP 运行端口与 Base URL 约定 v1
 
 ## 端口
 
@@ -31,6 +31,44 @@ http://<你的内网穿透域名>/api/v1
 
 正式发布建议使用 HTTPS。
 
+## Wiki.js OIDC Auth Origin
+
+OIDC Provider 与公开 App API 共用 `28657` 端口，但不使用 `/api/v1` base path。
+
+推荐生产入口：
+
+```text
+https://auth.deuterium.cafe
+```
+
+当前已确认的内部 HTTP-only 入口：
+
+```text
+http://authdeuterium.s.odn.cc
+```
+
+该内部入口映射到：
+
+```text
+127.0.0.1:28657
+```
+
+OIDC endpoints：
+
+```text
+/.well-known/openid-configuration
+/.well-known/jwks.json
+/oauth/authorize
+/oauth/login
+/oauth/token
+/oauth/userinfo
+/oauth/logout
+```
+
+内部 HTTP-only 环境必须显式设置 `oidc.allowInsecureHttp=true`。公网密码登录应使用 HTTPS。
+
+OIDC access token 只用于 `/oauth/userinfo`，不得用于 `/api/v1/account/me` 或其他 Android App API。
+
 ## Chat WebSocket URL
 
 通过 HTTPS 隧道时：
@@ -54,5 +92,3 @@ ws://127.0.0.1:28658/bridge/plugin/ws
 ```
 
 插件桥使用 `Authorization: Bearer <plugin-bridge-token>` 鉴权。token 必须只写在生产机器本地配置里，不提交到仓库。
-
-

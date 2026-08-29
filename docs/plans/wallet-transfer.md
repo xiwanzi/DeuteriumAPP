@@ -1,4 +1,4 @@
-﻿# Wallet Transfer 实施计划 v1
+# Wallet Transfer 实施计划 v1
 
 ## 1. 文档定位
 
@@ -291,4 +291,3 @@ Wallet Transfer 实施完成后必须满足：
 后端在成功写入 `wallet_records` 后，应通过 App WebSocket 向相关已注册 App 用户推送钱包变动事件。事件只用于刷新 App 钱包视图和后台系统通知，不改变旧的 `GET /wallet/records` 查询契约。
 
 Android 钱包变动通知由用户在设置中手动开启，默认关闭。通知只在 App 后台触发；前台只更新余额和流水。流水显示时间固定使用 UTC+8，避免不同设备时区造成账务时间理解不一致。
-

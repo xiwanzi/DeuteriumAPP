@@ -1,4 +1,4 @@
-﻿# DeuteriumAPP Android
+# DeuteriumAPP Android
 
 这是 DeuteriumAPP 的 Android 前端工程。
 
@@ -9,8 +9,8 @@ AI 代理需要构建 APK 时请阅读：[Android 前端 AI 构建指南](docs/a
 
 ## 当前版本
 
-- `versionCode`: `5`
-- `versionName`: `1.0.3`
+- `versionCode`: `6`
+- `versionName`: `1.0.4`
 - Debug APK：`app/build/outputs/apk/debug/app-debug.apk`
 - 本版本包含聊天页前台持续收取改进：WebSocket 实时接收、前台 15 秒静默补齐、回前台立即补齐，以及“X 条新消息”提示。
 
@@ -26,8 +26,8 @@ AI 代理需要构建 APK 时请阅读：[Android 前端 AI 构建指南](docs/a
 
 ## 生产接口
 
-- HTTP Base URL：`https://example.com/api/v1`
-- Chat WebSocket URL：`wss://example.com/api/v1/chat/ws`
+- HTTP Base URL：`https://deuterium.s.odn.cc/api/v1`
+- Chat WebSocket URL：`wss://deuterium.s.odn.cc/api/v1/chat/ws`
 
 登录成功后，App 使用后端返回的 opaque Bearer token 调用需要登录态的接口。玩家引用使用后端返回的 `playerRef`，Android 不解析、不展示、不构造服务器身份内部值。
 
@@ -47,4 +47,3 @@ AI 代理需要构建 APK 时请阅读：[Android 前端 AI 构建指南](docs/a
 cd C:\DeuteriumAPP\android-app
 .\gradlew.bat :app:testDebugUnitTest :app:assembleDebug
 ```
-

@@ -1,4 +1,4 @@
-﻿@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 
 package com.deuterium.app
 
@@ -33,6 +33,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -78,6 +79,7 @@ import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.Home
@@ -87,6 +89,7 @@ import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Reply
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.AlertDialog
@@ -116,6 +119,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -133,21 +137,28 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.deuterium.app.data.ChatFeedItem
+import com.deuterium.app.data.ChatDeliveryState
 import com.deuterium.app.data.ChatHistoryItem
 import com.deuterium.app.data.OnlinePlayer
 import com.deuterium.app.data.PlayerSummary
@@ -157,26 +168,36 @@ import com.deuterium.app.data.ResolvedPlayerRef
 import com.deuterium.app.data.UserProfile
 import com.deuterium.app.data.WalletRecord
 import com.deuterium.app.network.ApiClient
+import com.deuterium.app.data.AiPlan
 import com.deuterium.app.repository.AppUpdateRepository
 import com.deuterium.app.repository.AuthRepository
+import com.deuterium.app.repository.AiRepository
+import com.deuterium.app.repository.AiUiMessage
 import com.deuterium.app.repository.ChatHistoryStore
 import com.deuterium.app.repository.ChatRepository
+import com.deuterium.app.repository.PendingAiPurchaseRef
+import com.deuterium.app.repository.PendingTransferRequest
 import com.deuterium.app.repository.SessionStore
 import com.deuterium.app.repository.WalletRepository
+import com.deuterium.app.repository.durationLabel
 import com.deuterium.app.repository.formatIsoDateTimeUtc8
 import com.deuterium.app.repository.playerSummary
+import com.deuterium.app.repository.priceLabel
+import com.deuterium.app.repository.quotaLabel
 import com.deuterium.app.repository.validateAmount
+import com.deuterium.app.repository.validateAiMessage
 import com.deuterium.app.repository.validateChatMessage
 import com.deuterium.app.ui.theme.DeuteriumColorPreset
 import com.deuterium.app.ui.theme.DeuteriumTheme
 import com.deuterium.app.ui.theme.DeuteriumThemeMode
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestHighestRefreshRate()
         val preferences = AppPreferences(this)
         val chatHistoryStore = ChatHistoryStore(this)
         setContent {
@@ -213,17 +234,6 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
         requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST)
-    }
-
-    private fun requestHighestRefreshRate() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
-
-        @Suppress("DEPRECATION")
-        val fastestMode = windowManager.defaultDisplay.supportedModes.maxByOrNull { it.refreshRate } ?: return
-        window.attributes = window.attributes.apply {
-            preferredDisplayModeId = fastestMode.modeId
-            preferredRefreshRate = fastestMode.refreshRate
-        }
     }
 
     private companion object {
@@ -333,7 +343,66 @@ private class AppPreferences(context: Context) : SessionStore {
         prefs.edit().putString(walletRecordKey(userId), recordId).apply()
     }
 
+    override fun loadPendingTransfer(userId: String): PendingTransferRequest? {
+        val clientRequestId = prefs.getString(transferKey(userId, "client"), null)
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        val recipientPlayerRef = prefs.getString(transferKey(userId, "recipient"), null)
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        val amount = prefs.getString(transferKey(userId, "amount"), null)
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        val note = prefs.getString(transferKey(userId, "note"), null)?.takeIf { it.isNotBlank() }
+        return PendingTransferRequest(clientRequestId, recipientPlayerRef, amount, note)
+    }
+
+    override fun savePendingTransfer(userId: String, pending: PendingTransferRequest) {
+        prefs.edit()
+            .putString(transferKey(userId, "client"), pending.clientRequestId)
+            .putString(transferKey(userId, "recipient"), pending.recipientPlayerRef)
+            .putString(transferKey(userId, "amount"), pending.amount)
+            .putString(transferKey(userId, "note"), pending.note.orEmpty())
+            .apply()
+    }
+
+    override fun clearPendingTransfer(userId: String) {
+        prefs.edit()
+            .remove(transferKey(userId, "client"))
+            .remove(transferKey(userId, "recipient"))
+            .remove(transferKey(userId, "amount"))
+            .remove(transferKey(userId, "note"))
+            .apply()
+    }
+
+    override fun loadPendingAiPurchase(userId: String, planId: String): PendingAiPurchaseRef? {
+        val clientRequestId = prefs.getString(aiPurchaseKey(userId, planId, "client"), null)
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        val purchaseId = prefs.getString(aiPurchaseKey(userId, planId, "purchase"), null)
+            ?.takeIf { it.isNotBlank() }
+        return PendingAiPurchaseRef(clientRequestId, purchaseId)
+    }
+
+    override fun savePendingAiPurchase(userId: String, planId: String, pending: PendingAiPurchaseRef) {
+        prefs.edit()
+            .putString(aiPurchaseKey(userId, planId, "client"), pending.clientRequestId)
+            .putString(aiPurchaseKey(userId, planId, "purchase"), pending.purchaseId.orEmpty())
+            .apply()
+    }
+
+    override fun clearPendingAiPurchase(userId: String, planId: String) {
+        prefs.edit()
+            .remove(aiPurchaseKey(userId, planId, "client"))
+            .remove(aiPurchaseKey(userId, planId, "purchase"))
+            .apply()
+    }
+
     private fun walletRecordKey(userId: String): String = "$KEY_LAST_WALLET_RECORD_ID_PREFIX$userId"
+    private fun transferKey(userId: String, suffix: String): String =
+        "$KEY_PENDING_TRANSFER_PREFIX${userId}_$suffix"
+    private fun aiPurchaseKey(userId: String, planId: String, suffix: String): String =
+        "$KEY_PENDING_AI_PURCHASE_PREFIX${userId}_${planId}_$suffix"
 
     private companion object {
         const val PREFS_NAME = "deuterium_app_preferences"
@@ -349,6 +418,8 @@ private class AppPreferences(context: Context) : SessionStore {
         const val KEY_USER_QQ = "user_qq"
         const val KEY_USER_IDENTITY_STATUS = "user_identity_status"
         const val KEY_LAST_WALLET_RECORD_ID_PREFIX = "last_wallet_record_id_"
+        const val KEY_PENDING_TRANSFER_PREFIX = "pending_transfer_"
+        const val KEY_PENDING_AI_PURCHASE_PREFIX = "pending_ai_purchase_"
     }
 }
 
@@ -364,7 +435,7 @@ private data class MentionSelection(
 )
 
 private enum class AuthMode { Login, Register, ResetPassword }
-private enum class MainSection { Wallet, Transfer, Chat, Profile }
+private enum class MainSection { Wallet, Transfer, Chat, Ai, Profile }
 private enum class TransferFeedbackPhase { Idle, Loading, Success, Notice, Error }
 
 private object AppShapes {
@@ -378,7 +449,9 @@ private object AppShapes {
 
 private object AppMotion {
     const val PressedScale = 0.96f
+    const val CanaryPressedScale = 0.98f
     const val Micro = 110
+    const val CanaryFast = 130
     const val Fast = 160
     const val Page = 240
     const val Dialog = 280
@@ -388,10 +461,43 @@ private object AppMotion {
 private fun MainSection.motionOrder(): Int = when (this) {
     MainSection.Wallet -> 0
     MainSection.Chat -> 1
-    MainSection.Profile -> 2
-    MainSection.Transfer -> 3
+    MainSection.Ai -> 2
+    MainSection.Profile -> 3
+    MainSection.Transfer -> 4
 }
 
+private fun chatMatchesQuery(item: ChatFeedItem, query: String): Boolean {
+    if (query.isBlank()) return true
+    return item.sender.contains(query, ignoreCase = true) ||
+        item.content.contains(query, ignoreCase = true) ||
+        item.time.contains(query, ignoreCase = true)
+}
+
+private fun composeReplyContent(replyTarget: ChatFeedItem?, body: String): String {
+    if (replyTarget == null) return body
+    val quote = compactChatSnippet(replyTarget.content, 72)
+    return "回复 ${replyTarget.sender}: $quote\n${body.trim()}"
+}
+
+private fun compactChatSnippet(text: String, maxChars: Int): String {
+    val compact = text.replace(Regex("\\s+"), " ").trim()
+    if (compact.length <= maxChars) return compact
+    val safeMax = (maxChars - 3).coerceAtLeast(1)
+    return compact.take(safeMax) + "..."
+}
+
+private fun playerInitial(gameId: String): String =
+    gameId.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?"
+
+@Composable
+private fun XiaoxiangAvatar(modifier: Modifier = Modifier) {
+    Image(
+        painter = painterResource(id = R.drawable.xiaoxiang_avatar),
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        modifier = modifier.clip(CircleShape)
+    )
+}
 
 @Composable
 private fun DeuteriumApp(
@@ -430,6 +536,17 @@ private fun DeuteriumApp(
             }
         )
     }
+    val aiRepository = remember {
+        AiRepository(
+            apiClient = apiClient,
+            sessionStore = preferences,
+            onUnauthorized = { user = null }
+        )
+    }
+
+    DisposableEffect(chatRepository) {
+        onDispose { chatRepository.close() }
+    }
 
     LaunchedEffect(Unit) {
         if (!preferences.loadToken().isNullOrBlank()) {
@@ -447,6 +564,7 @@ private fun DeuteriumApp(
             walletRepository.syncNewRecords()
         } else {
             chatRepository.disconnect()
+            aiRepository.clearLocal()
         }
     }
 
@@ -500,6 +618,7 @@ private fun DeuteriumApp(
                     authRepository = authRepository,
                     walletRepository = walletRepository,
                     chatRepository = chatRepository,
+                    aiRepository = aiRepository,
                     appUpdateRepository = appUpdateRepository,
                     appearance = appearance,
                     onThemeModeChange = onThemeModeChange,
@@ -518,6 +637,7 @@ private fun DeuteriumApp(
                     },
                     onLogout = {
                         chatRepository.disconnect()
+                        aiRepository.clearLocal()
                         user = null
                     }
                 )
@@ -569,9 +689,17 @@ private fun AppIconButtonSurface(
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (pressed) AppMotion.PressedScale else 1f,
+        targetValue = if (pressed) {
+            if (BuildConfig.CANARY_UI) AppMotion.CanaryPressedScale else AppMotion.PressedScale
+        } else {
+            1f
+        },
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
+            dampingRatio = if (BuildConfig.CANARY_UI) {
+                Spring.DampingRatioNoBouncy
+            } else {
+                Spring.DampingRatioMediumBouncy
+            },
             stiffness = Spring.StiffnessHigh
         ),
         label = "IconButtonPressScale"
@@ -614,11 +742,34 @@ private fun AuthScreen(
             .padding(20.dp),
         verticalArrangement = Arrangement.Center
     ) {
-        Text(
-            text = "Deuterium VIII",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = if (BuildConfig.CANARY_UI) "Deuterium VIII Canary" else "Deuterium VIII",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold
+            )
+            if (BuildConfig.CANARY_UI) {
+                Surface(
+                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                    shape = AppShapes.pill,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp
+                ) {
+                    Text(
+                        BuildConfig.VERSION_NAME,
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
         Text(
             text = "账号、信用点与聊天的手机入口",
             style = MaterialTheme.typography.bodyLarge,
@@ -631,11 +782,14 @@ private fun AuthScreen(
                 AnimatedContent(
                     targetState = mode,
                     transitionSpec = {
-                        (fadeIn(tween(AppMotion.Fast, easing = AppMotion.Easing)) +
-                            slideInHorizontally(tween(AppMotion.Page, easing = AppMotion.Easing)) { it / 8 })
+                        val motion = if (BuildConfig.CANARY_UI) AppMotion.CanaryFast else AppMotion.Fast
+                        val enterDistance = if (BuildConfig.CANARY_UI) 12 else 8
+                        val exitDistance = if (BuildConfig.CANARY_UI) 14 else 10
+                        (fadeIn(tween(motion, easing = AppMotion.Easing)) +
+                            slideInHorizontally(tween(AppMotion.Page, easing = AppMotion.Easing)) { it / enterDistance })
                             .togetherWith(
                                 fadeOut(tween(AppMotion.Micro, easing = AppMotion.Easing)) +
-                                    slideOutHorizontally(tween(AppMotion.Fast, easing = AppMotion.Easing)) { -it / 10 }
+                                    slideOutHorizontally(tween(motion, easing = AppMotion.Easing)) { -it / exitDistance }
                             )
                     },
                     label = "AuthModeTransition"
@@ -888,6 +1042,7 @@ private fun MainShell(
     authRepository: AuthRepository,
     walletRepository: WalletRepository,
     chatRepository: ChatRepository,
+    aiRepository: AiRepository,
     appUpdateRepository: AppUpdateRepository,
     appearance: AppAppearance,
     onThemeModeChange: (DeuteriumThemeMode) -> Unit,
@@ -910,6 +1065,18 @@ private fun MainShell(
     var chatUnseenMessages by rememberSaveable { mutableStateOf(0) }
     var chatObservedVisibleCount by rememberSaveable { mutableStateOf(0) }
     var chatObservedLastVisibleId by rememberSaveable { mutableStateOf<String?>(null) }
+    val bottomBarEnter = if (BuildConfig.CANARY_UI) {
+        fadeIn(tween(AppMotion.CanaryFast, easing = AppMotion.Easing))
+    } else {
+        fadeIn(tween(AppMotion.Fast, easing = AppMotion.Easing)) +
+            expandVertically(tween(AppMotion.Fast, easing = AppMotion.Easing), expandFrom = Alignment.Top)
+    }
+    val bottomBarExit = if (BuildConfig.CANARY_UI) {
+        fadeOut(tween(AppMotion.Micro, easing = AppMotion.Easing))
+    } else {
+        fadeOut(tween(AppMotion.Micro, easing = AppMotion.Easing)) +
+            shrinkVertically(tween(AppMotion.Fast, easing = AppMotion.Easing), shrinkTowards = Alignment.Top)
+    }
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -921,40 +1088,73 @@ private fun MainShell(
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 shape = AppShapes.extraLarge
             ) {
-                Column(Modifier.padding(horizontal = 18.dp, vertical = 14.dp)) {
-                    Text("Deuterium", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        text = user.gameId,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                Row(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            if (BuildConfig.CANARY_UI) "Deuterium Canary" else "Deuterium",
+                            style = MaterialTheme.typography.titleLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = user.gameId,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    if (BuildConfig.CANARY_UI) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.tertiaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                            shape = AppShapes.pill,
+                            tonalElevation = 0.dp,
+                            shadowElevation = 0.dp
+                        ) {
+                            Text(
+                                BuildConfig.VERSION_NAME,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
                 }
             }
         },
         bottomBar = {
             AnimatedVisibility(
                 visible = !imeVisible,
-                enter = fadeIn(tween(AppMotion.Fast, easing = AppMotion.Easing)) +
-                    expandVertically(tween(AppMotion.Fast, easing = AppMotion.Easing), expandFrom = Alignment.Top),
-                exit = fadeOut(tween(AppMotion.Micro, easing = AppMotion.Easing)) +
-                    shrinkVertically(tween(AppMotion.Fast, easing = AppMotion.Easing), shrinkTowards = Alignment.Top)
+                enter = bottomBarEnter,
+                exit = bottomBarExit
             ) {
                 AppSurface(
                     modifier = Modifier
                         .fillMaxWidth()
                         .windowInsetsPadding(WindowInsets.navigationBars)
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .padding(
+                            horizontal = if (BuildConfig.CANARY_UI) 10.dp else 12.dp,
+                            vertical = if (BuildConfig.CANARY_UI) 6.dp else 8.dp
+                        ),
                     shape = AppShapes.extraLarge
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(72.dp)
+                            .height(if (BuildConfig.CANARY_UI) 64.dp else 72.dp)
                             .padding(horizontal = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         BottomItem("钱包", Icons.Filled.Home, section == MainSection.Wallet) { section = MainSection.Wallet }
                         BottomItem("聊天", Icons.Filled.Chat, section == MainSection.Chat) { section = MainSection.Chat }
+                        BottomItem("Saki", Icons.Filled.Chat, section == MainSection.Ai) { section = MainSection.Ai }
                         BottomItem("我的", Icons.Filled.Person, section == MainSection.Profile) { section = MainSection.Profile }
                     }
                 }
@@ -971,13 +1171,18 @@ private fun MainShell(
                 targetState = section,
                 transitionSpec = {
                     val forward = targetState.motionOrder() >= initialState.motionOrder()
-                    val enterOffset: (Int) -> Int = { if (forward) it / 7 else -it / 7 }
-                    val exitOffset: (Int) -> Int = { if (forward) -it / 9 else it / 9 }
-                    (fadeIn(tween(AppMotion.Fast, easing = AppMotion.Easing)) +
+                    val enterDistance = if (BuildConfig.CANARY_UI) 11 else 7
+                    val exitDistance = if (BuildConfig.CANARY_UI) 13 else 9
+                    val enterOffset: (Int) -> Int = { if (forward) it / enterDistance else -it / enterDistance }
+                    val exitOffset: (Int) -> Int = { if (forward) -it / exitDistance else it / exitDistance }
+                    (fadeIn(tween(if (BuildConfig.CANARY_UI) AppMotion.CanaryFast else AppMotion.Fast, easing = AppMotion.Easing)) +
                         slideInHorizontally(tween(AppMotion.Page, easing = AppMotion.Easing), enterOffset))
                         .togetherWith(
                             fadeOut(tween(AppMotion.Micro, easing = AppMotion.Easing)) +
-                                slideOutHorizontally(tween(AppMotion.Fast, easing = AppMotion.Easing), exitOffset)
+                                slideOutHorizontally(
+                                    tween(if (BuildConfig.CANARY_UI) AppMotion.CanaryFast else AppMotion.Fast, easing = AppMotion.Easing),
+                                    exitOffset
+                                )
                         )
                 },
                 modifier = Modifier.fillMaxSize(),
@@ -1013,6 +1218,7 @@ private fun MainShell(
                             section = MainSection.Transfer
                         }
                     )
+                    MainSection.Ai -> AiScreen(repository = aiRepository)
                     MainSection.Profile -> ProfileScreen(
                         user = user,
                         repository = authRepository,
@@ -1044,6 +1250,20 @@ private fun WalletScreen(repository: WalletRepository, onTransfer: () -> Unit) {
     var message by remember { mutableStateOf<String?>(null) }
     var autoDismissMessage by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val refreshBalance: () -> Unit = {
+        scope.launch {
+            message = when (val result = repository.refreshBalance()) {
+                is RepoResult.Success -> {
+                    autoDismissMessage = true
+                    "余额已刷新：${result.value.amount}"
+                }
+                is RepoResult.Error -> {
+                    autoDismissMessage = false
+                    result.message
+                }
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         when (val result = repository.loadWallet()) {
@@ -1056,6 +1276,21 @@ private fun WalletScreen(repository: WalletRepository, onTransfer: () -> Unit) {
                 autoDismissMessage = false
             }
         }
+    }
+
+    if (BuildConfig.CANARY_UI) {
+        CanaryWalletScreen(
+            repository = repository,
+            message = message,
+            autoDismissMessage = autoDismissMessage,
+            onDismissMessage = {
+                message = null
+                autoDismissMessage = false
+            },
+            onRefresh = refreshBalance,
+            onTransfer = onTransfer
+        )
+        return
     }
 
     LazyColumn(
@@ -1078,20 +1313,7 @@ private fun WalletScreen(repository: WalletRepository, onTransfer: () -> Unit) {
                         fontWeight = FontWeight.Bold
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Button(onClick = {
-                            scope.launch {
-                                message = when (val result = repository.refreshBalance()) {
-                                    is RepoResult.Success -> {
-                                        autoDismissMessage = true
-                                        "余额已刷新：${result.value.amount}"
-                                    }
-                                    is RepoResult.Error -> {
-                                        autoDismissMessage = false
-                                        result.message
-                                    }
-                                }
-                            }
-                        }) {
+                        Button(onClick = refreshBalance) {
                             Icon(Icons.Filled.Refresh, contentDescription = null)
                             Spacer(Modifier.width(6.dp))
                             Text("刷新")
@@ -1116,9 +1338,205 @@ private fun WalletScreen(repository: WalletRepository, onTransfer: () -> Unit) {
         }
         items(
             items = repository.records,
-            key = { it.recordId }
+            key = { it.recordId },
+            contentType = { "wallet-record" }
         ) { record ->
             WalletRecordRow(record, Modifier.animateItem())
+        }
+    }
+}
+
+@Composable
+private fun CanaryWalletScreen(
+    repository: WalletRepository,
+    message: String?,
+    autoDismissMessage: Boolean,
+    onDismissMessage: () -> Unit,
+    onRefresh: () -> Unit,
+    onTransfer: () -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 10.dp, top = 8.dp, end = 10.dp, bottom = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            AppSurface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(28.dp),
+                color = MaterialTheme.colorScheme.surface
+            ) {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        PlayerAvatar(
+                            gameId = "D",
+                            statusColor = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                "Deuterium Wallet",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                "服务器信用点余额",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Text(
+                        text = repository.balance?.amount ?: "正在加载",
+                        style = MaterialTheme.typography.displayMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        CanaryWalletAction(
+                            label = "刷新",
+                            icon = Icons.Filled.Refresh,
+                            modifier = Modifier.weight(1f),
+                            onClick = onRefresh
+                        )
+                        CanaryWalletAction(
+                            label = "转账",
+                            icon = Icons.Filled.Send,
+                            modifier = Modifier.weight(1f),
+                            onClick = onTransfer
+                        )
+                    }
+                }
+            }
+        }
+        if (message != null) {
+            item {
+                InlineMessage(
+                    message = message,
+                    autoDismiss = autoDismissMessage,
+                    onDismiss = onDismissMessage
+                )
+            }
+        }
+        item {
+            Text(
+                "最近流水",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(start = 6.dp, top = 2.dp, end = 6.dp)
+            )
+        }
+        if (repository.records.isEmpty()) {
+            item {
+                AppSurface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = AppShapes.large,
+                    color = MaterialTheme.colorScheme.surface
+                ) {
+                    Text(
+                        "暂无流水",
+                        modifier = Modifier.padding(18.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+        items(
+            items = repository.records,
+            key = { it.recordId },
+            contentType = { "canary-wallet-record" }
+        ) { record ->
+            CanaryWalletRecordRow(record, Modifier.animateItem())
+        }
+    }
+}
+
+@Composable
+private fun CanaryWalletAction(
+    label: String,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    AppSurface(
+        modifier = modifier
+            .height(48.dp)
+            .clickable(onClick = onClick),
+        shape = AppShapes.pill,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(19.dp))
+            Spacer(Modifier.width(7.dp))
+            Text(label, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+private fun CanaryWalletRecordRow(record: WalletRecord, modifier: Modifier = Modifier) {
+    val positive = record.direction == "income"
+    val sign = if (positive) "+" else "-"
+    val amountColor = if (positive) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error
+    AppSurface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surface
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(if (positive) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.errorContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    if (positive) Icons.Filled.Add else Icons.Filled.Send,
+                    contentDescription = null,
+                    tint = amountColor,
+                    modifier = Modifier.size(21.dp)
+                )
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    record.otherPlayer.gameId,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    listOfNotNull(formatIsoDateTimeUtc8(record.occurredAt), record.status, record.note).joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Text(
+                text = "$sign${record.amount}",
+                fontWeight = FontWeight.Bold,
+                color = amountColor,
+                maxLines = 1
+            )
         }
     }
 }
@@ -1132,6 +1550,9 @@ private fun TransferScreen(
     val scope = rememberCoroutineScope()
     var query by remember(initialRecipient) { mutableStateOf(initialRecipient?.gameId ?: "") }
     var recipient by remember(initialRecipient) { mutableStateOf(initialRecipient) }
+    var recipientSearchJob by remember { mutableStateOf<Job?>(null) }
+    var recipientSearchGeneration by remember { mutableStateOf(0) }
+    var recipientSearching by remember { mutableStateOf(false) }
     var amount by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
     var message by remember { mutableStateOf<String?>(null) }
@@ -1144,27 +1565,82 @@ private fun TransferScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(18.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            .padding(if (BuildConfig.CANARY_UI) 10.dp else 18.dp),
+        verticalArrangement = Arrangement.spacedBy(if (BuildConfig.CANARY_UI) 10.dp else 14.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("转账", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-            TextButton(onClick = onBack) { Text("返回钱包") }
+        if (BuildConfig.CANARY_UI) {
+            AppSurface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(28.dp),
+                color = MaterialTheme.colorScheme.surface
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    AppIconButtonSurface(
+                        modifier = Modifier.size(46.dp),
+                        onClick = onBack
+                    ) {
+                        Icon(Icons.Filled.Close, contentDescription = "返回钱包", modifier = Modifier.size(22.dp))
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("转账", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Deuterium Pay",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("转账", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                TextButton(onClick = onBack) { Text("返回钱包") }
+            }
         }
-        AppSurface(modifier = Modifier.fillMaxWidth(), shape = AppShapes.large) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("收款玩家", style = MaterialTheme.typography.titleMedium)
+        AppSurface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = if (BuildConfig.CANARY_UI) RoundedCornerShape(26.dp) else AppShapes.large,
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                Modifier.padding(if (BuildConfig.CANARY_UI) 14.dp else 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(if (BuildConfig.CANARY_UI) "收款人" else "收款玩家", style = MaterialTheme.typography.titleMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
                         value = query,
-                        onValueChange = { query = it },
+                        onValueChange = {
+                            query = it
+                            recipient = null
+                            message = null
+                            recipientSearchGeneration += 1
+                            recipientSearchJob?.cancel()
+                            recipientSearching = false
+                        },
                         label = { Text("游戏内 ID 或 QQ") },
                         singleLine = true,
                         modifier = Modifier.weight(1f)
                     )
-                    OutlinedButton(onClick = {
-                        scope.launch {
-                            when (val result = repository.findRecipient(query)) {
+                    OutlinedButton(
+                        enabled = query.isNotBlank() && !recipientSearching,
+                        onClick = {
+                            val searchedQuery = query.trim()
+                            recipientSearchGeneration += 1
+                            val generation = recipientSearchGeneration
+                            recipientSearchJob?.cancel()
+                            recipientSearching = true
+                            recipientSearchJob = scope.launch {
+                                val result = repository.findRecipient(searchedQuery)
+                                if (generation != recipientSearchGeneration || query.trim() != searchedQuery) {
+                                    return@launch
+                                }
+                                recipientSearching = false
+                                when (result) {
                                 is RepoResult.Success -> {
                                     recipient = result.value
                                     message = "已确认收款方：${result.value.gameId}"
@@ -1181,10 +1657,18 @@ private fun TransferScreen(
                 }
                 AnimatedVisibility(
                     visible = recipient != null,
-                    enter = fadeIn(tween(AppMotion.Fast, easing = AppMotion.Easing)) +
-                        expandVertically(tween(AppMotion.Fast, easing = AppMotion.Easing)),
-                    exit = fadeOut(tween(AppMotion.Micro, easing = AppMotion.Easing)) +
-                        shrinkVertically(tween(AppMotion.Fast, easing = AppMotion.Easing))
+                    enter = if (BuildConfig.CANARY_UI) {
+                        fadeIn(tween(AppMotion.CanaryFast, easing = AppMotion.Easing))
+                    } else {
+                        fadeIn(tween(AppMotion.Fast, easing = AppMotion.Easing)) +
+                            expandVertically(tween(AppMotion.Fast, easing = AppMotion.Easing))
+                    },
+                    exit = if (BuildConfig.CANARY_UI) {
+                        fadeOut(tween(AppMotion.Micro, easing = AppMotion.Easing))
+                    } else {
+                        fadeOut(tween(AppMotion.Micro, easing = AppMotion.Easing)) +
+                            shrinkVertically(tween(AppMotion.Fast, easing = AppMotion.Easing))
+                    }
                 ) {
                     recipient?.let {
                         PlayerSummaryCard(player = playerSummary(it))
@@ -1192,8 +1676,12 @@ private fun TransferScreen(
                 }
             }
         }
-        AppSurface(modifier = Modifier.fillMaxWidth(), shape = AppShapes.large) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        AppSurface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = if (BuildConfig.CANARY_UI) RoundedCornerShape(26.dp) else AppShapes.large,
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Column(Modifier.padding(if (BuildConfig.CANARY_UI) 14.dp else 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("转账信息", style = MaterialTheme.typography.titleMedium)
                 OutlinedTextField(
                     value = amount,
@@ -1226,70 +1714,277 @@ private fun TransferScreen(
     }
 
     if (showConfirm) {
-        AlertDialog(
-            onDismissRequest = { showConfirm = false },
-            title = { Text("确认转账") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("收款方：${recipient?.gameId.orEmpty()}")
-                    Text("金额：${amount.ifBlank { "0" }} 信用点")
-                    Text("备注：${note.ifBlank { "无" }}")
-                }
-            },
-            confirmButton = {
-                Button(onClick = {
-                    showConfirm = false
-                    message = null
-                    pendingTransfer = PendingTransfer(recipient, amount, note)
-                    feedbackMessage = "正在确认转账"
-                    feedbackPhase = TransferFeedbackPhase.Loading
-                    scope.launch {
-                        val pending = PendingTransfer(recipient, amount, note)
-                        when (val result = repository.transfer(pending.recipient, pending.amount, pending.note)) {
-                            is RepoResult.Success -> {
-                                val transfer = result.value
-                                feedbackMessage = when (transfer.status) {
-                                    "success" -> "已转出 ${transfer.amount} 信用点"
-                                    "processing" -> "转账正在处理中，请稍后查看余额和流水。"
-                                    "unknown" -> "转账结果暂未确认，请稍后查看余额和流水。"
-                                    else -> "转账未完成，请查看余额和流水确认结果。"
-                                }
-                                feedbackPhase = if (transfer.status == "success") {
-                                    TransferFeedbackPhase.Success
-                                } else {
-                                    TransferFeedbackPhase.Notice
-                                }
-                            }
-                            is RepoResult.Error -> {
-                                feedbackMessage = result.message
-                                feedbackPhase = TransferFeedbackPhase.Error
-                            }
+        val submitTransfer: () -> Unit = {
+            showConfirm = false
+            message = null
+            pendingTransfer = PendingTransfer(recipient, amount, note)
+            feedbackMessage = "正在确认转账"
+            feedbackPhase = TransferFeedbackPhase.Loading
+            scope.launch {
+                val pending = PendingTransfer(recipient, amount, note)
+                when (val result = repository.transfer(pending.recipient, pending.amount, pending.note)) {
+                    is RepoResult.Success -> {
+                        val transfer = result.value
+                        feedbackMessage = when (transfer.status) {
+                            "success" -> "已转出 ${transfer.amount} 信用点"
+                            "processing" -> "转账正在处理中，请稍后查看余额和流水。"
+                            "unknown" -> "转账结果暂未确认，请稍后查看余额和流水。"
+                            else -> "转账未完成，请查看余额和流水确认结果。"
+                        }
+                        feedbackPhase = if (transfer.status == "success") {
+                            TransferFeedbackPhase.Success
+                        } else {
+                            TransferFeedbackPhase.Notice
                         }
                     }
-                }) {
-                    Text("确认提交")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showConfirm = false }) {
-                    Text("继续修改")
+                    is RepoResult.Error -> {
+                        feedbackMessage = result.message
+                        feedbackPhase = TransferFeedbackPhase.Error
+                    }
                 }
             }
-        )
+        }
+        if (BuildConfig.CANARY_UI) {
+            CanaryTransferConfirmSheet(
+                recipient = recipient,
+                amount = amount,
+                note = note,
+                onConfirm = submitTransfer,
+                onDismiss = { showConfirm = false }
+            )
+        } else {
+            AlertDialog(
+                onDismissRequest = { showConfirm = false },
+                title = { Text("确认转账") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("收款方：${recipient?.gameId.orEmpty()}")
+                        Text("金额：${amount.ifBlank { "0" }} 信用点")
+                        Text("备注：${note.ifBlank { "无" }}")
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = submitTransfer) {
+                        Text("确认提交")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showConfirm = false }) {
+                        Text("继续修改")
+                    }
+                }
+            )
+        }
     }
 
     if (feedbackPhase != TransferFeedbackPhase.Idle) {
-        TransferFeedbackDialog(
-            phase = feedbackPhase,
-            message = feedbackMessage,
-            onDismiss = {
-                feedbackPhase = TransferFeedbackPhase.Idle
-                pendingTransfer = null
+        if (BuildConfig.CANARY_UI) {
+            CanaryTransferFeedbackSheet(
+                phase = feedbackPhase,
+                message = feedbackMessage,
+                onDismiss = {
+                    feedbackPhase = TransferFeedbackPhase.Idle
+                    pendingTransfer = null
+                }
+            )
+        } else {
+            TransferFeedbackDialog(
+                phase = feedbackPhase,
+                message = feedbackMessage,
+                onDismiss = {
+                    feedbackPhase = TransferFeedbackPhase.Idle
+                    pendingTransfer = null
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun CanaryTransferConfirmSheet(
+    recipient: ResolvedPlayerRef?,
+    amount: String,
+    note: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 10.dp, vertical = 12.dp),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp, bottomStart = 22.dp, bottomEnd = 22.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp
+            ) {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        PlayerAvatar(
+                            gameId = recipient?.gameId ?: "?",
+                            statusColor = if (recipient?.online == true) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("确认转账", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                recipient?.gameId ?: "未选择收款人",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    CanaryTransferSummaryRow("金额", "${amount.ifBlank { "0" }} 信用点")
+                    CanaryTransferSummaryRow("备注", note.ifBlank { "无" })
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedButton(
+                            onClick = onDismiss,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                        ) {
+                            Text("继续修改")
+                        }
+                        Button(
+                            onClick = onConfirm,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp),
+                            shape = AppShapes.pill
+                        ) {
+                            Text("确认提交")
+                        }
+                    }
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun CanaryTransferSummaryRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            label,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
 
+@Composable
+private fun CanaryTransferFeedbackSheet(
+    phase: TransferFeedbackPhase,
+    message: String,
+    onDismiss: () -> Unit
+) {
+    val loading = phase == TransferFeedbackPhase.Loading
+    Dialog(
+        onDismissRequest = { if (!loading) onDismiss() },
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 10.dp, vertical = 12.dp),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp, bottomStart = 22.dp, bottomEnd = 22.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp
+            ) {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    val iconColor = when (phase) {
+                        TransferFeedbackPhase.Success -> Color(0xFF2E7D32)
+                        TransferFeedbackPhase.Error -> MaterialTheme.colorScheme.error
+                        TransferFeedbackPhase.Notice -> MaterialTheme.colorScheme.secondary
+                        else -> MaterialTheme.colorScheme.primary
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(58.dp)
+                            .clip(CircleShape)
+                            .background(iconColor.copy(alpha = 0.14f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            when (phase) {
+                                TransferFeedbackPhase.Success -> Icons.Filled.Check
+                                TransferFeedbackPhase.Error -> Icons.Filled.Close
+                                else -> Icons.Filled.Refresh
+                            },
+                            contentDescription = null,
+                            tint = iconColor,
+                            modifier = Modifier.size(30.dp)
+                        )
+                    }
+                    Text(
+                        when (phase) {
+                            TransferFeedbackPhase.Loading -> "正在转账"
+                            TransferFeedbackPhase.Success -> "转账成功"
+                            TransferFeedbackPhase.Notice -> "结果待确认"
+                            TransferFeedbackPhase.Error -> "转账失败"
+                            TransferFeedbackPhase.Idle -> ""
+                        },
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (!loading) {
+                        Button(
+                            onClick = onDismiss,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                            shape = AppShapes.pill
+                        ) {
+                            Text("完成")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/*
+ * Dev keeps the original transfer feedback dialog below. Canary uses the
+ * bottom-sheet variant above to keep the experiment isolated.
+ */
 @Composable
 private fun TransferFeedbackDialog(
     phase: TransferFeedbackPhase,
@@ -1456,6 +2151,10 @@ private fun ChatScreen(
     var selectedMentions by remember { mutableStateOf<List<MentionSelection>>(emptyList()) }
     var showMentions by remember { mutableStateOf(false) }
     var showPlayerDirectory by remember { mutableStateOf(false) }
+    var chatSearchExpanded by rememberSaveable { mutableStateOf(false) }
+    var chatSearchQuery by rememberSaveable { mutableStateOf("") }
+    var replyTarget by remember { mutableStateOf<ChatFeedItem?>(null) }
+    var actionMessage by remember { mutableStateOf<ChatFeedItem?>(null) }
     val density = LocalDensity.current
     val keyboardPadding = with(density) {
         (
@@ -1465,9 +2164,30 @@ private fun ChatScreen(
             .coerceAtLeast(0)
             .toDp()
     }
-    val mentionQuery = activeMentionQuery(input)
-    val mentionPlayers = repository.mentionCandidates(mentionQuery)
-    val visibleMessages = repository.messages.filter { showServerEvents || !it.event }
+    val mentionQuery by remember { derivedStateOf { activeMentionQuery(input) } }
+    val mentionPlayers by remember { derivedStateOf { repository.mentionCandidates(mentionQuery) } }
+    val visibleMessages by remember(showServerEvents) {
+        derivedStateOf { repository.messages.filter { showServerEvents || !it.event } }
+    }
+    val searchActive by remember {
+        derivedStateOf { BuildConfig.CANARY_UI && chatSearchQuery.isNotBlank() }
+    }
+    val displayedMessages by remember {
+        derivedStateOf {
+            if (!searchActive) {
+                visibleMessages
+            } else {
+                val query = chatSearchQuery.trim()
+                visibleMessages.filter { chatMatchesQuery(it, query) }
+            }
+        }
+    }
+    val displayedOnlineCount by remember {
+        derivedStateOf { repository.onlineCount ?: repository.playerDirectory.count { it.serverOnline } }
+    }
+    val showMentionSuggestions by remember {
+        derivedStateOf { (showMentions || mentionQuery != null) && mentionPlayers.isNotEmpty() }
+    }
 
     LaunchedEffect(listState) {
         snapshotFlow {
@@ -1485,26 +2205,37 @@ private fun ChatScreen(
         }
     }
 
-    LaunchedEffect(visibleMessages.size, visibleMessages.lastOrNull()?.id) {
+    LaunchedEffect(visibleMessages.size, visibleMessages.lastOrNull()?.id, searchActive) {
         val currentLastId = visibleMessages.lastOrNull()?.id
         val insertedCount = (visibleMessages.size - observedVisibleCount).coerceAtLeast(0)
         if (observedLastVisibleId != null && currentLastId != observedLastVisibleId && insertedCount > 0 && !followLatest) {
             onUnseenMessagesChange(unseenMessages + insertedCount)
         }
-        if (followLatest && visibleMessages.isNotEmpty()) {
-            listState.scrollToItem(visibleMessages.lastIndex)
+        if (!searchActive && followLatest && visibleMessages.isNotEmpty()) {
+            val targetIndex = displayedMessages.lastIndex
+            val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            if (lastVisibleIndex < targetIndex) {
+                listState.scrollToItem(targetIndex)
+            }
             onUnseenMessagesChange(0)
         }
         onObservedVisibleCountChange(visibleMessages.size)
         onObservedLastVisibleIdChange(currentLastId)
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(repository) {
         if (repository.messages.isEmpty()) {
             repository.syncRecentMessages()
         }
         repository.refreshPresenceAndDirectory()
         repository.refreshFollows()
+    }
+
+    LaunchedEffect(repository) {
+        while (isActive) {
+            delay(15_000L)
+            if (repository.appForeground) repository.syncRecentMessages()
+        }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -1516,41 +2247,125 @@ private fun ChatScreen(
             AppSurface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                shape = AppShapes.pill
+                    .heightIn(
+                        min = if (BuildConfig.CANARY_UI) 64.dp else 48.dp,
+                        max = if (BuildConfig.CANARY_UI && chatSearchExpanded) 136.dp else 64.dp
+                    )
+                    .padding(
+                        horizontal = if (BuildConfig.CANARY_UI) 10.dp else 12.dp,
+                        vertical = 4.dp
+                    ),
+                shape = if (BuildConfig.CANARY_UI) {
+                    RoundedCornerShape(28.dp)
+                } else {
+                    AppShapes.pill
+                }
             ) {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 6.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        .padding(
+                            horizontal = if (BuildConfig.CANARY_UI) 10.dp else 6.dp,
+                            vertical = if (BuildConfig.CANARY_UI) 8.dp else 4.dp
+                        ),
+                    verticalArrangement = Arrangement.spacedBy(if (BuildConfig.CANARY_UI) 8.dp else 6.dp)
                 ) {
-                    AppIconButtonSurface(
+                    Row(
                         modifier = Modifier
-                            .height(40.dp)
-                            .widthIn(min = 76.dp),
-                        onClick = { showPlayerDirectory = true }
+                            .fillMaxWidth()
+                            .height(if (BuildConfig.CANARY_UI) 48.dp else 40.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        AppIconButtonSurface(
+                            modifier = Modifier
+                                .height(if (BuildConfig.CANARY_UI) 48.dp else 40.dp)
+                                .width(if (BuildConfig.CANARY_UI) 92.dp else 76.dp),
+                            onClick = { showPlayerDirectory = true }
                         ) {
-                            Icon(Icons.Filled.People, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(Icons.Filled.People, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Text(
+                                    displayedOnlineCount.toString(),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                             Text(
-                                (repository.onlineCount ?: repository.playerDirectory.count { it.serverOnline }).toString(),
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold
+                                "公共聊天",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
+                            if (BuildConfig.CANARY_UI && searchActive) {
+                                Text(
+                                    "${displayedMessages.size} 条匹配",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        if (BuildConfig.CANARY_UI) {
+                            AppIconButtonSurface(
+                                modifier = Modifier.size(48.dp),
+                                selected = chatSearchExpanded,
+                                onClick = {
+                                    chatSearchExpanded = !chatSearchExpanded
+                                    if (!chatSearchExpanded) chatSearchQuery = ""
+                                }
+                            ) {
+                                Icon(
+                                    if (chatSearchExpanded) Icons.Filled.Close else Icons.Filled.Search,
+                                    contentDescription = if (chatSearchExpanded) "关闭聊天搜索" else "搜索当前聊天",
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
                         }
                     }
-                    Text(
-                        "公共聊天",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    if (BuildConfig.CANARY_UI) {
+                        AnimatedVisibility(
+                            visible = chatSearchExpanded,
+                            enter = fadeIn(tween(AppMotion.CanaryFast, easing = AppMotion.Easing)),
+                            exit = fadeOut(tween(AppMotion.Micro, easing = AppMotion.Easing))
+                        ) {
+                            BasicTextField(
+                                value = chatSearchQuery,
+                                onValueChange = { chatSearchQuery = it },
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                    color = MaterialTheme.colorScheme.onSurface
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(46.dp)
+                                    .clip(AppShapes.pill)
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f))
+                                    .padding(horizontal = 16.dp)
+                            ) { innerTextField ->
+                                Box(
+                                    Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.CenterStart
+                                ) {
+                                    if (chatSearchQuery.isBlank()) {
+                                        Text(
+                                            "搜索玩家、内容或时间",
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    innerTextField()
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1559,30 +2374,79 @@ private fun ChatScreen(
                     .weight(1f)
                     .fillMaxWidth(),
                 state = listState,
-                contentPadding = PaddingValues(start = 14.dp, top = 10.dp, end = 14.dp, bottom = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                contentPadding = PaddingValues(
+                    start = if (BuildConfig.CANARY_UI) 10.dp else 14.dp,
+                    top = if (BuildConfig.CANARY_UI) 8.dp else 10.dp,
+                    end = if (BuildConfig.CANARY_UI) 10.dp else 14.dp,
+                    bottom = 8.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(if (BuildConfig.CANARY_UI) 6.dp else 8.dp)
             ) {
                 items(
-                    items = visibleMessages,
-                    key = { it.id }
+                    items = displayedMessages,
+                    key = { it.id },
+                    contentType = { if (it.event) "chat-event" else if (it.mine) "chat-mine" else "chat-other" }
                 ) { chat ->
+                    val itemModifier = if (BuildConfig.CANARY_UI) {
+                        Modifier.animateItem(
+                            fadeInSpec = tween(AppMotion.CanaryFast, easing = AppMotion.Easing),
+                            placementSpec = spring(
+                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                stiffness = Spring.StiffnessMedium
+                            ),
+                            fadeOutSpec = tween(AppMotion.Micro, easing = AppMotion.Easing)
+                        )
+                    } else {
+                        Modifier
+                    }
                     ChatBubble(
                         message = chat,
-                        onLongCopy = {
-                            clipboardManager.setText(AnnotatedString(chat.content))
-                            message = if (chat.event) "已复制服务器事件。" else "已复制 ${chat.sender} 的消息。"
-                            autoDismissMessage = true
+                        modifier = itemModifier,
+                        onLongPress = {
+                            if (BuildConfig.CANARY_UI) {
+                                actionMessage = chat
+                            } else {
+                                clipboardManager.setText(AnnotatedString(chat.content))
+                                message = if (chat.event) "已复制服务器事件。" else "已复制 ${chat.sender} 的消息。"
+                                autoDismissMessage = true
+                            }
                         }
                     )
+                }
+                if (BuildConfig.CANARY_UI && searchActive && displayedMessages.isEmpty()) {
+                    item(
+                        key = "chat-search-empty",
+                        contentType = "chat-search-empty"
+                    ) {
+                        AppSurface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 18.dp),
+                            shape = AppShapes.large,
+                            color = MaterialTheme.colorScheme.surface
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(18.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Icon(Icons.Filled.Search, contentDescription = null)
+                                Text("没有匹配的聊天", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "换一个玩家名、关键词或时间再试。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
             AnimatedVisibility(
-                visible = (showMentions || mentionQuery != null) && mentionPlayers.isNotEmpty(),
-                enter = fadeIn(tween(AppMotion.Fast, easing = AppMotion.Easing)) +
-                    expandVertically(tween(AppMotion.Fast, easing = AppMotion.Easing)),
-                exit = fadeOut(tween(AppMotion.Micro, easing = AppMotion.Easing)) +
-                    shrinkVertically(tween(AppMotion.Fast, easing = AppMotion.Easing))
+                visible = showMentionSuggestions,
+                enter = fadeIn(tween(AppMotion.Fast, easing = AppMotion.Easing)),
+                exit = fadeOut(tween(AppMotion.Micro, easing = AppMotion.Easing))
             ) {
                 MentionSuggestions(
                     players = mentionPlayers,
@@ -1597,10 +2461,8 @@ private fun ChatScreen(
 
             AnimatedVisibility(
                 visible = unseenMessages > 0,
-                enter = fadeIn(tween(AppMotion.Fast, easing = AppMotion.Easing)) +
-                    expandVertically(tween(AppMotion.Fast, easing = AppMotion.Easing)),
-                exit = fadeOut(tween(AppMotion.Micro, easing = AppMotion.Easing)) +
-                    shrinkVertically(tween(AppMotion.Fast, easing = AppMotion.Easing))
+                enter = fadeIn(tween(AppMotion.Fast, easing = AppMotion.Easing)),
+                exit = fadeOut(tween(AppMotion.Micro, easing = AppMotion.Easing))
             ) {
                 Box(
                     modifier = Modifier
@@ -1611,7 +2473,7 @@ private fun ChatScreen(
                     AssistChip(
                         onClick = {
                             scope.launch {
-                                if (visibleMessages.isNotEmpty()) {
+                                if (!searchActive && visibleMessages.isNotEmpty()) {
                                     listState.animateScrollToItem(visibleMessages.lastIndex)
                                 }
                                 onFollowLatestChange(true)
@@ -1637,6 +2499,7 @@ private fun ChatScreen(
             )
             ChatInputBar(
                 input = input,
+                replyTarget = replyTarget,
                 onInputChange = {
                     input = it
                     selectedMentions = selectedMentions.filter { mention ->
@@ -1654,14 +2517,28 @@ private fun ChatScreen(
                         showMentions = true
                     }
                 },
+                onClearReply = { replyTarget = null },
                 onSend = {
-                    when (val result = repository.send(input.text, selectedMentions.map { it.playerRef })) {
+                    val outgoingContent = if (BuildConfig.CANARY_UI) {
+                        composeReplyContent(replyTarget, input.text)
+                    } else {
+                        input.text
+                    }
+                    when (val result = repository.send(outgoingContent, selectedMentions.map { it.playerRef })) {
                         is RepoResult.Success -> {
                             input = TextFieldValue("")
+                            replyTarget = null
                             selectedMentions = emptyList()
                             showMentions = false
                             message = null
                             autoDismissMessage = false
+                            onFollowLatestChange(true)
+                            onUnseenMessagesChange(0)
+                            scope.launch {
+                                if (!searchActive && displayedMessages.isNotEmpty()) {
+                                    listState.scrollToItem(displayedMessages.lastIndex)
+                                }
+                            }
                         }
                         is RepoResult.Error -> {
                             message = result.message
@@ -1682,6 +2559,27 @@ private fun ChatScreen(
                 }
             )
         }
+    }
+
+    actionMessage?.let { selected ->
+        ChatMessageActionsDialog(
+            message = selected,
+            onDismiss = { actionMessage = null },
+            onReply = {
+                if (!selected.event) {
+                    replyTarget = selected
+                    message = "正在回复 ${selected.sender}。"
+                    autoDismissMessage = true
+                }
+                actionMessage = null
+            },
+            onCopy = {
+                clipboardManager.setText(AnnotatedString(selected.content))
+                message = if (selected.event) "已复制服务器事件。" else "已复制 ${selected.sender} 的消息。"
+                autoDismissMessage = true
+                actionMessage = null
+            }
+        )
     }
 
     selectedPlayer?.let { player ->
@@ -1748,11 +2646,798 @@ private fun ChatScreen(
 }
 
 @Composable
+private fun AiScreen(repository: AiRepository) {
+    val scope = rememberCoroutineScope()
+    val clipboardManager = LocalClipboardManager.current
+    val listState = rememberLazyListState()
+    val density = LocalDensity.current
+    val keyboardPadding = with(density) {
+        (
+            WindowInsets.ime.getBottom(this) -
+                WindowInsets.navigationBars.getBottom(this)
+            )
+            .coerceAtLeast(0)
+            .toDp()
+    }
+    var input by remember { mutableStateOf("") }
+    var showPlans by remember { mutableStateOf(false) }
+    var localMessage by remember { mutableStateOf<String?>(null) }
+    var forceScrollToken by remember { mutableStateOf(0) }
+    val quota = repository.quota
+    val planName = repository.currentPlan?.name?.takeIf { it.isNotBlank() } ?: "免费额度"
+    val restoreTime = quota?.restoresAt ?: quota?.restoreAt ?: quota?.resetsAt ?: quota?.resetAt
+    val assistantName = repository.assistantName
+
+    LaunchedEffect(Unit) {
+        repository.loadInitial()
+    }
+
+    val nearBottom by remember {
+        derivedStateOf {
+            val layout = listState.layoutInfo
+            val total = layout.totalItemsCount
+            if (total == 0) {
+                true
+            } else {
+                (layout.visibleItemsInfo.lastOrNull()?.index ?: 0) >= total - 2
+            }
+        }
+    }
+
+    LaunchedEffect(repository.messages.size, repository.messages.lastOrNull()?.id) {
+        val last = repository.messages.lastOrNull() ?: return@LaunchedEffect
+        if (last.role == "user" || nearBottom) {
+            listState.scrollToItem(repository.messages.lastIndex)
+        }
+    }
+
+    LaunchedEffect(forceScrollToken, repository.messages.size) {
+        if (forceScrollToken > 0 && repository.messages.isNotEmpty()) {
+            listState.scrollToItem(repository.messages.lastIndex)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(bottom = keyboardPadding)
+    ) {
+        AppSurface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 64.dp)
+                .padding(horizontal = 10.dp, vertical = 4.dp)
+                .clickable(enabled = !repository.loading) {
+                    scope.launch {
+                        repository.loadPlans()
+                        showPlans = true
+                    }
+                },
+            shape = AppShapes.extraLarge
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    modifier = Modifier.size(42.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp
+                ) {
+                    XiaoxiangAvatar(Modifier.fillMaxSize())
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        assistantName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = aiQuotaLabel(planName, quota?.remaining, quota?.limit, restoreTime),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Text(
+                    if (repository.loading) "加载中" else "升级",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1
+                )
+            }
+        }
+
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            state = listState,
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (repository.messages.isEmpty()) {
+                item(key = "ai-empty", contentType = "ai-empty") {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 18.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Surface(
+                            modifier = Modifier.size(54.dp),
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            tonalElevation = 0.dp,
+                            shadowElevation = 0.dp
+                        ) {
+                            XiaoxiangAvatar(Modifier.fillMaxSize())
+                        }
+                        Text(assistantName, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "发送 /new 开启新对话",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            items(
+                items = repository.messages,
+                key = { it.id },
+                contentType = { "ai-${it.role}" }
+            ) { message ->
+                AiMessageBubble(
+                    message = message,
+                    assistantName = assistantName,
+                    onCopy = { text ->
+                        clipboardManager.setText(AnnotatedString(text))
+                        localMessage = "已复制 $assistantName 的消息。"
+                    }
+                )
+            }
+        }
+
+        InlineMessage(
+            message = localMessage ?: repository.message,
+            modifier = Modifier.padding(horizontal = 12.dp),
+            onDismiss = {
+                if (localMessage != null) {
+                    localMessage = null
+                } else {
+                    repository.clearMessage()
+                }
+            }
+        )
+        AiInputBar(
+            input = input,
+            sending = repository.sending || repository.loading,
+            assistantName = assistantName,
+            onInputChange = { input = it },
+            onSend = {
+                if (repository.sending || repository.loading) return@AiInputBar
+                val outgoing = input
+                val trimmed = outgoing.trim()
+                val localError = validateAiMessage(trimmed)
+                if (localError != null && trimmed != "/new") {
+                    localMessage = localError
+                    return@AiInputBar
+                }
+                input = ""
+                forceScrollToken += 1
+                scope.launch {
+                    repository.sendMessage(outgoing)
+                }
+            }
+        )
+    }
+
+    if (showPlans) {
+        AiPlansDialog(
+            plans = repository.plans,
+            purchasing = repository.purchasing,
+            onDismiss = { showPlans = false },
+            onRefresh = { scope.launch { repository.loadPlans() } },
+            onPurchase = { plan ->
+                scope.launch { repository.purchase(plan) }
+            }
+        )
+    }
+}
+
+@Composable
+private fun AiInputBar(
+    input: String,
+    sending: Boolean,
+    assistantName: String,
+    onInputChange: (String) -> Unit,
+    onSend: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                modifier = Modifier.weight(1f),
+                shape = AppShapes.pill,
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f),
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp
+            ) {
+                BasicTextField(
+                    value = input,
+                    onValueChange = onInputChange,
+                    enabled = true,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 44.dp, max = 120.dp)
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    maxLines = 5,
+                    decorationBox = { innerTextField ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (input.isBlank()) {
+                                Text(
+                                    "给 $assistantName 发消息",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            innerTextField()
+                        }
+                    }
+                )
+            }
+            val canSend = !sending && input.isNotBlank()
+            Surface(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clickable(enabled = canSend) { onSend() },
+                shape = CircleShape,
+                color = if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                contentColor = if (canSend) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.Send, contentDescription = if (sending) "发送中" else "发送", modifier = Modifier.size(20.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AiMessageBubble(
+    message: AiUiMessage,
+    assistantName: String,
+    onCopy: (String) -> Unit
+) {
+    val mine = message.role == "user"
+    val content = message.content.ifBlank { if (message.streaming) "正在生成..." else "" }
+    if (mine) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
+        ) {
+            Surface(
+                modifier = Modifier.widthIn(max = 340.dp),
+                color = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = 22.dp, bottomEnd = 7.dp),
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp
+            ) {
+                Text(
+                    text = content,
+                    modifier = Modifier.padding(horizontal = 15.dp, vertical = 10.dp),
+                    style = MaterialTheme.typography.bodyLarge
+                )
+            }
+        }
+        return
+    }
+    val canCopy = !message.streaming && content.isNotBlank()
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Surface(
+            modifier = Modifier.size(30.dp),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp
+        ) {
+            XiaoxiangAvatar(Modifier.fillMaxSize())
+        }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .combinedClickable(
+                    enabled = canCopy,
+                    onClick = {},
+                    onLongClick = { onCopy(content) }
+                ),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    assistantName,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    if (message.streaming) message.statusText ?: "生成中" else message.time,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (canCopy) {
+                    IconButton(
+                        modifier = Modifier.size(30.dp),
+                        onClick = { onCopy(content) }
+                    ) {
+                        Icon(Icons.Filled.ContentCopy, contentDescription = "复制 AI 消息", modifier = Modifier.size(15.dp))
+                    }
+                }
+            }
+            if (message.renderMarkdown) {
+                AiMarkdownText(content)
+            } else {
+                Text(
+                    text = content,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            if (message.sources.isNotEmpty()) {
+                Text(
+                    text = "参考：" + message.sources.take(3).joinToString(" / ") { source ->
+                        source.title?.takeIf { it.isNotBlank() } ?: "知识库"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AiMarkdownText(content: String, modifier: Modifier = Modifier) {
+    val blocks = remember(content) { parseAiMarkdown(content) }
+    val bodyColor = MaterialTheme.colorScheme.onSurface
+    val variantColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val codeBackground = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.70f)
+    val codeColor = MaterialTheme.colorScheme.onSurface
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        blocks.forEach { block ->
+            when (block) {
+                is AiMarkdownBlock.Heading -> Text(
+                    text = markdownInline(block.text, codeBackground, codeColor),
+                    style = if (block.level <= 1) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = bodyColor
+                )
+                is AiMarkdownBlock.Paragraph -> Text(
+                    text = markdownInline(block.text, codeBackground, codeColor),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = bodyColor
+                )
+                is AiMarkdownBlock.Bullet -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("•", style = MaterialTheme.typography.bodyLarge, color = variantColor)
+                    Text(
+                        text = markdownInline(block.text, codeBackground, codeColor),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = bodyColor,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                is AiMarkdownBlock.Quote -> Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .width(3.dp)
+                            .heightIn(min = 24.dp)
+                            .clip(AppShapes.pill)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
+                    )
+                    Text(
+                        text = markdownInline(block.text, codeBackground, codeColor),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = variantColor,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                is AiMarkdownBlock.Code -> Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = codeBackground,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp
+                ) {
+                    Text(
+                        text = block.text,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = codeColor,
+                        modifier = Modifier.padding(10.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+private sealed interface AiMarkdownBlock {
+    data class Heading(val level: Int, val text: String) : AiMarkdownBlock
+    data class Paragraph(val text: String) : AiMarkdownBlock
+    data class Bullet(val text: String) : AiMarkdownBlock
+    data class Quote(val text: String) : AiMarkdownBlock
+    data class Code(val text: String) : AiMarkdownBlock
+}
+
+private fun parseAiMarkdown(content: String): List<AiMarkdownBlock> {
+    if (content.isBlank()) return listOf(AiMarkdownBlock.Paragraph(""))
+    val blocks = mutableListOf<AiMarkdownBlock>()
+    val paragraph = mutableListOf<String>()
+    val code = StringBuilder()
+    var inCode = false
+
+    fun flushParagraph() {
+        if (paragraph.isEmpty()) return
+        blocks += AiMarkdownBlock.Paragraph(paragraph.joinToString("\n").trim())
+        paragraph.clear()
+    }
+
+    content.lines().forEach { raw ->
+        val line = raw.trimEnd()
+        val trimmed = line.trim()
+        if (trimmed.startsWith("```")) {
+            if (inCode) {
+                blocks += AiMarkdownBlock.Code(code.toString().trimEnd())
+                code.clear()
+                inCode = false
+            } else {
+                flushParagraph()
+                inCode = true
+            }
+            return@forEach
+        }
+        if (inCode) {
+            code.appendLine(raw)
+            return@forEach
+        }
+        if (trimmed.isBlank()) {
+            flushParagraph()
+            return@forEach
+        }
+        val heading = Regex("""^(#{1,3})\s+(.+)$""").matchEntire(trimmed)
+        if (heading != null) {
+            flushParagraph()
+            blocks += AiMarkdownBlock.Heading(heading.groupValues[1].length, heading.groupValues[2].trim())
+            return@forEach
+        }
+        val bullet = Regex("""^[-*+]\s+(.+)$""").matchEntire(trimmed)
+        if (bullet != null) {
+            flushParagraph()
+            blocks += AiMarkdownBlock.Bullet(bullet.groupValues[1].trim())
+            return@forEach
+        }
+        if (trimmed.startsWith(">")) {
+            flushParagraph()
+            blocks += AiMarkdownBlock.Quote(trimmed.removePrefix(">").trim())
+            return@forEach
+        }
+        paragraph += line
+    }
+    if (inCode && code.isNotBlank()) {
+        blocks += AiMarkdownBlock.Code(code.toString().trimEnd())
+    }
+    flushParagraph()
+    return blocks.ifEmpty { listOf(AiMarkdownBlock.Paragraph(content)) }
+}
+
+private fun markdownInline(text: String, codeBackground: Color, codeColor: Color): AnnotatedString =
+    buildAnnotatedString {
+        var index = 0
+        while (index < text.length) {
+            when {
+                text.startsWith("`", index) -> {
+                    val end = text.indexOf('`', startIndex = index + 1)
+                    if (end > index + 1) {
+                        withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = codeBackground, color = codeColor)) {
+                            append(text.substring(index + 1, end))
+                        }
+                        index = end + 1
+                    } else {
+                        append(text[index])
+                        index += 1
+                    }
+                }
+                text.startsWith("**", index) -> {
+                    val end = text.indexOf("**", startIndex = index + 2)
+                    if (end > index + 2) {
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                            append(text.substring(index + 2, end))
+                        }
+                        index = end + 2
+                    } else {
+                        append(text[index])
+                        index += 1
+                    }
+                }
+                else -> {
+                    append(text[index])
+                    index += 1
+                }
+            }
+        }
+    }
+
+@Composable
+private fun AiPlansDialog(
+    plans: List<AiPlan>,
+    purchasing: Boolean,
+    onDismiss: () -> Unit,
+    onRefresh: () -> Unit,
+    onPurchase: (AiPlan) -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 14.dp, vertical = 18.dp),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 560.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("AI 套餐", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                        IconButton(onClick = onRefresh) {
+                            Icon(Icons.Filled.Refresh, contentDescription = "刷新套餐")
+                        }
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Filled.Close, contentDescription = "关闭")
+                        }
+                    }
+                    if (plans.isEmpty()) {
+                        Text(
+                            "暂无可购买套餐。",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    plans.forEach { plan ->
+                        AppSurface(modifier = Modifier.fillMaxWidth(), shape = AppShapes.medium) {
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(plan.name.ifBlank { "AI 套餐" }, fontWeight = FontWeight.SemiBold)
+                                plan.description?.takeIf { it.isNotBlank() }?.let {
+                                    Text(
+                                        it,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    FilterChip(selected = false, onClick = {}, label = { Text(plan.priceLabel()) })
+                                    FilterChip(selected = false, onClick = {}, label = { Text(plan.durationLabel()) })
+                                    FilterChip(selected = false, onClick = {}, label = { Text(plan.quotaLabel()) })
+                                }
+                                Button(
+                                    enabled = !purchasing,
+                                    onClick = { onPurchase(plan) },
+                                    modifier = Modifier.align(Alignment.End)
+                                ) {
+                                    Text(if (purchasing) "处理中" else "购买")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun aiQuotaLabel(planName: String, remaining: Int?, limit: Int?, restoreTime: String?): String {
+    val quotaText = if (remaining != null && limit != null && limit > 0) {
+        "$remaining/$limit"
+    } else {
+        "额度加载中"
+    }
+    val restoreText = restoreTime?.takeIf { it.isNotBlank() }?.let {
+        "，恢复 ${formatIsoDateTimeUtc8(it)}"
+    }.orEmpty()
+    return "$planName · 剩余额度 $quotaText$restoreText"
+}
+
+@Composable
+private fun ChatMessageActionsDialog(
+    message: ChatFeedItem,
+    onDismiss: () -> Unit,
+    onReply: () -> Unit,
+    onCopy: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 14.dp, vertical = 18.dp),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        if (message.event) "服务器事件" else message.sender,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        compactChatSnippet(message.content, 120),
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ChatActionButton(
+                            label = "回复",
+                            icon = Icons.Filled.Reply,
+                            enabled = !message.event,
+                            modifier = Modifier.weight(1f),
+                            onClick = onReply
+                        )
+                        ChatActionButton(
+                            label = "复制",
+                            icon = Icons.Filled.ContentCopy,
+                            modifier = Modifier.weight(1f),
+                            onClick = onCopy
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatActionButton(
+    label: String,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.height(44.dp)
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(7.dp))
+        Text(label)
+    }
+}
+
+@Composable
+private fun ReplyComposerPreview(
+    replyTarget: ChatFeedItem,
+    onClear: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = AppShapes.large,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(3.dp)
+                    .height(34.dp)
+                    .clip(AppShapes.pill)
+                    .background(MaterialTheme.colorScheme.primary)
+            )
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    "回复 ${replyTarget.sender}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    compactChatSnippet(replyTarget.content, 84),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            IconButton(onClick = onClear, modifier = Modifier.size(34.dp)) {
+                Icon(Icons.Filled.Close, contentDescription = "取消回复", modifier = Modifier.size(18.dp))
+            }
+        }
+    }
+}
+
+@Composable
 private fun PlayerDirectoryPanel(
     players: List<PlayerDirectoryItem>,
     onDismiss: () -> Unit,
     onInspect: (PlayerDirectoryItem) -> Unit
 ) {
+    val serverOnlineCount by remember(players) {
+        derivedStateOf { players.count { it.serverOnline } }
+    }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -1771,7 +3456,7 @@ private fun PlayerDirectoryPanel(
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text("玩家列表", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                         Text(
-                            "${players.count { it.serverOnline }} 位服务器在线，${players.size} 位可查看玩家",
+                            "$serverOnlineCount 位服务器在线，${players.size} 位可查看玩家",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1790,7 +3475,8 @@ private fun PlayerDirectoryPanel(
                 ) {
                     items(
                         items = players,
-                        key = { it.playerRef }
+                        key = { it.playerRef },
+                        contentType = { "player-directory-item" }
                     ) { player ->
                         AppSurface(
                             modifier = Modifier
@@ -1889,20 +3575,60 @@ private fun playerDirectoryDotColor(player: PlayerDirectoryItem): Color =
     }
 
 @Composable
+private fun PlayerAvatar(
+    gameId: String,
+    statusColor: Color,
+    modifier: Modifier = Modifier.size(38.dp)
+) {
+    Box(modifier = modifier, contentAlignment = Alignment.BottomEnd) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                playerInitial(gameId),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .clip(CircleShape)
+                .background(statusColor)
+        )
+    }
+}
+
+@Composable
 private fun MentionSuggestions(
     players: List<PlayerDirectoryItem>,
     onSelect: (PlayerDirectoryItem) -> Unit
 ) {
     AppSurface(
         modifier = Modifier
-            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .padding(
+                horizontal = if (BuildConfig.CANARY_UI) 10.dp else 16.dp,
+                vertical = if (BuildConfig.CANARY_UI) 4.dp else 6.dp
+            )
             .fillMaxWidth(),
-        shape = AppShapes.list
+        shape = if (BuildConfig.CANARY_UI) {
+            RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = 14.dp, bottomEnd = 14.dp)
+        } else {
+            AppShapes.list
+        }
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(
+            Modifier.padding(if (BuildConfig.CANARY_UI) 10.dp else 12.dp),
+            verticalArrangement = Arrangement.spacedBy(if (BuildConfig.CANARY_UI) 6.dp else 8.dp)
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "选择要提及的玩家",
+                    if (BuildConfig.CANARY_UI) "提及玩家" else "选择要提及的玩家",
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1916,19 +3642,24 @@ private fun MentionSuggestions(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 260.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                    .heightIn(max = if (BuildConfig.CANARY_UI) 284.dp else 260.dp),
+                verticalArrangement = Arrangement.spacedBy(if (BuildConfig.CANARY_UI) 4.dp else 6.dp)
             ) {
                 items(
                     items = players,
-                    key = { it.playerRef }
+                    key = { it.playerRef },
+                    contentType = { "mention-player" }
                 ) { player ->
                     AppSurface(
                         modifier = Modifier
                             .fillMaxWidth()
                             .animateItem(),
-                        shape = AppShapes.medium,
-                        color = MaterialTheme.colorScheme.surfaceVariant
+                        shape = if (BuildConfig.CANARY_UI) AppShapes.large else AppShapes.medium,
+                        color = if (BuildConfig.CANARY_UI) {
+                            MaterialTheme.colorScheme.surface
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        }
                     ) {
                         TextButton(
                             onClick = { onSelect(player) },
@@ -1939,12 +3670,16 @@ private fun MentionSuggestions(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(9.dp)
-                                        .clip(CircleShape)
-                                        .background(playerDirectoryDotColor(player))
-                                )
+                                if (BuildConfig.CANARY_UI) {
+                                    PlayerAvatar(player.gameId, playerDirectoryDotColor(player), Modifier.size(38.dp))
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(9.dp)
+                                            .clip(CircleShape)
+                                            .background(playerDirectoryDotColor(player))
+                                    )
+                                }
                                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                                     Text(
                                         "@${player.gameId}",
@@ -1966,6 +3701,19 @@ private fun MentionSuggestions(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
+                                if (BuildConfig.CANARY_UI) {
+                                    Text(
+                                        when {
+                                            player.followed -> "★"
+                                            player.serverOnline -> "在线"
+                                            player.appConnected -> "App"
+                                            else -> ""
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1
+                                    )
+                                }
                             }
                         }
                     }
@@ -1978,12 +3726,17 @@ private fun MentionSuggestions(
 @Composable
 private fun ChatInputBar(
     input: TextFieldValue,
+    replyTarget: ChatFeedItem?,
     onInputChange: (TextFieldValue) -> Unit,
     onMentionClick: () -> Unit,
+    onClearReply: () -> Unit,
     onSend: () -> Unit
 ) {
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val controlSize = if (BuildConfig.CANARY_UI) 44.dp else 46.dp
+    val inputMaxHeight = if (BuildConfig.CANARY_UI) 96.dp else 108.dp
+    val inputShape = if (BuildConfig.CANARY_UI) AppShapes.large else AppShapes.extraLarge
     fun focusInput() {
         focusRequester.requestFocus()
         keyboardController?.show()
@@ -1991,72 +3744,103 @@ private fun ChatInputBar(
 
     AppSurface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+        shape = if (BuildConfig.CANARY_UI) {
+            RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+        } else {
+            RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+        }
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 7.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(
+                    horizontal = if (BuildConfig.CANARY_UI) 10.dp else 12.dp,
+                    vertical = if (BuildConfig.CANARY_UI) 6.dp else 7.dp
+                ),
+            verticalArrangement = Arrangement.spacedBy(if (BuildConfig.CANARY_UI) 6.dp else 7.dp)
         ) {
-            AppIconButtonSurface(
-                modifier = Modifier.size(46.dp),
-                onClick = onMentionClick
-            ) {
-                Icon(
-                    Icons.Filled.AlternateEmail,
-                    contentDescription = "提及玩家",
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-            AppSurface(
-                modifier = Modifier
-                    .weight(1f)
-                    .heightIn(min = 46.dp, max = 108.dp)
-                    .animateContentSize(animationSpec = tween(AppMotion.Fast, easing = AppMotion.Easing)),
-                shape = AppShapes.extraLarge,
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f)
-            ) {
-                BasicTextField(
-                    value = input,
-                    onValueChange = onInputChange,
-                    maxLines = 4,
-                    textStyle = MaterialTheme.typography.bodyLarge.copy(
-                        color = MaterialTheme.colorScheme.onSurface
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .focusRequester(focusRequester)
-                        .padding(horizontal = 14.dp, vertical = 11.dp)
-                ) { innerTextField ->
-                    Box(
-                        contentAlignment = Alignment.CenterStart,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        if (input.text.isBlank()) {
-                            Text(
-                                "公共聊天",
-                                maxLines = 1,
-                                softWrap = false,
-                                overflow = TextOverflow.Clip,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        innerTextField()
+            if (BuildConfig.CANARY_UI) {
+                AnimatedVisibility(
+                    visible = replyTarget != null,
+                    enter = fadeIn(tween(AppMotion.CanaryFast, easing = AppMotion.Easing)),
+                    exit = fadeOut(tween(AppMotion.Micro, easing = AppMotion.Easing))
+                ) {
+                    if (replyTarget != null) {
+                        ReplyComposerPreview(
+                            replyTarget = replyTarget,
+                            onClear = onClearReply
+                        )
                     }
                 }
             }
-            AppIconButtonSurface(
-                modifier = Modifier.size(46.dp),
-                selected = true,
-                onClick = onSend
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(if (BuildConfig.CANARY_UI) 8.dp else 10.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    Icons.Filled.Send,
-                    contentDescription = "发送",
-                    modifier = Modifier.size(24.dp)
-                )
+                AppIconButtonSurface(
+                    modifier = Modifier.size(controlSize),
+                    onClick = onMentionClick
+                ) {
+                    Icon(
+                        Icons.Filled.AlternateEmail,
+                        contentDescription = "提及玩家",
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+                AppSurface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = controlSize, max = inputMaxHeight)
+                        .animateContentSize(
+                            animationSpec = tween(
+                                if (BuildConfig.CANARY_UI) AppMotion.CanaryFast else AppMotion.Fast,
+                                easing = AppMotion.Easing
+                            )
+                        ),
+                    shape = inputShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f)
+                ) {
+                    BasicTextField(
+                        value = input,
+                        onValueChange = onInputChange,
+                        maxLines = 4,
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            color = MaterialTheme.colorScheme.onSurface
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(focusRequester)
+                            .padding(horizontal = 14.dp, vertical = 11.dp)
+                    ) { innerTextField ->
+                        Box(
+                            contentAlignment = Alignment.CenterStart,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (input.text.isBlank()) {
+                                Text(
+                                    if (BuildConfig.CANARY_UI && replyTarget != null) "输入回复" else "公共聊天",
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Clip,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            innerTextField()
+                        }
+                    }
+                }
+                AppIconButtonSurface(
+                    modifier = Modifier.size(controlSize),
+                    selected = true,
+                    onClick = onSend
+                ) {
+                    Icon(
+                        Icons.Filled.Send,
+                        contentDescription = "发送",
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
             }
         }
     }
@@ -2274,6 +4058,7 @@ private fun ChatHistoryDialog(
 
     LaunchedEffect(query) {
         loading = true
+        if (query.isNotBlank()) delay(250)
         history = repository.searchHistory(query)
         loading = false
     }
@@ -2347,7 +4132,8 @@ private fun ChatHistoryDialog(
                         ) {
                             items(
                                 items = history,
-                                key = { it.messageId }
+                                key = { it.messageId },
+                                contentType = { if (it.event) "history-event" else "history-message" }
                             ) { item ->
                                 ChatHistoryRow(item, Modifier.animateItem())
                             }
@@ -2595,36 +4381,63 @@ private fun PlayerSummaryCard(player: PlayerSummary) {
 private fun ChatBubble(
     message: ChatFeedItem,
     modifier: Modifier = Modifier,
-    onLongCopy: () -> Unit
+    onLongPress: () -> Unit
 ) {
     if (message.event) {
         Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            val eventColor = if (BuildConfig.CANARY_UI) {
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f)
+            } else {
+                MaterialTheme.colorScheme.tertiaryContainer
+            }
+            val eventContentColor = if (BuildConfig.CANARY_UI) {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            } else {
+                MaterialTheme.colorScheme.onTertiaryContainer
+            }
             Surface(
-                color = MaterialTheme.colorScheme.tertiaryContainer,
-                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                color = eventColor,
+                contentColor = eventContentColor,
                 shape = AppShapes.pill,
                 tonalElevation = 0.dp,
                 shadowElevation = 0.dp,
                 modifier = Modifier.combinedClickable(
                     onClick = {},
-                    onLongClickLabel = "复制",
-                    onLongClick = onLongCopy
+                    onLongClickLabel = if (BuildConfig.CANARY_UI) "操作" else "复制",
+                    onLongClick = onLongPress
                 )
             ) {
                 Text(
                     text = message.content,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                    modifier = Modifier.padding(
+                        horizontal = if (BuildConfig.CANARY_UI) 12.dp else 14.dp,
+                        vertical = if (BuildConfig.CANARY_UI) 6.dp else 7.dp
+                    ),
+                    style = if (BuildConfig.CANARY_UI) {
+                        MaterialTheme.typography.labelMedium
+                    } else {
+                        MaterialTheme.typography.bodySmall
+                    },
+                    color = eventContentColor
                 )
             }
         }
         return
     }
 
-    val bubbleShape = RoundedCornerShape(22.dp)
+    val bubbleShape = if (BuildConfig.CANARY_UI) {
+        if (message.mine) {
+            RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = 22.dp, bottomEnd = 7.dp)
+        } else {
+            RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = 7.dp, bottomEnd = 22.dp)
+        }
+    } else {
+        RoundedCornerShape(22.dp)
+    }
     val bubbleColor = if (message.mine) {
         MaterialTheme.colorScheme.primaryContainer
+    } else if (BuildConfig.CANARY_UI) {
+        MaterialTheme.colorScheme.surface
     } else {
         MaterialTheme.colorScheme.surfaceVariant
     }
@@ -2645,15 +4458,21 @@ private fun ChatBubble(
             tonalElevation = 0.dp,
             shadowElevation = 0.dp,
             modifier = Modifier
-                .fillMaxWidth(0.82f)
-                .widthIn(max = 340.dp)
+                .fillMaxWidth(if (BuildConfig.CANARY_UI) 0.86f else 0.82f)
+                .widthIn(max = if (BuildConfig.CANARY_UI) 380.dp else 340.dp)
                 .combinedClickable(
                     onClick = {},
-                    onLongClickLabel = "复制",
-                    onLongClick = onLongCopy
+                    onLongClickLabel = if (BuildConfig.CANARY_UI) "操作" else "复制",
+                    onLongClick = onLongPress
                 )
         ) {
-            Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Column(
+                Modifier.padding(
+                    horizontal = if (BuildConfig.CANARY_UI) 13.dp else 14.dp,
+                    vertical = if (BuildConfig.CANARY_UI) 9.dp else 10.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(if (BuildConfig.CANARY_UI) 4.dp else 5.dp)
+            ) {
                 Row {
                     Text(
                         message.sender,
@@ -2672,6 +4491,13 @@ private fun ChatBubble(
                     style = MaterialTheme.typography.bodyLarge,
                     color = contentColor
                 )
+                if (message.mine && message.deliveryState != ChatDeliveryState.Confirmed) {
+                    Text(
+                        text = if (message.deliveryState == ChatDeliveryState.Pending) "发送中…" else "发送结果待确认",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = contentColor.copy(alpha = 0.72f)
+                    )
+                }
             }
         }
     }
@@ -2680,9 +4506,17 @@ private fun ChatBubble(
 @Composable
 private fun RowScope.BottomItem(label: String, icon: ImageVector, selected: Boolean, onClick: () -> Unit) {
     val iconScale by animateFloatAsState(
-        targetValue = if (selected) 1.14f else 1f,
+        targetValue = if (selected) {
+            if (BuildConfig.CANARY_UI) 1.08f else 1.14f
+        } else {
+            1f
+        },
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
+            dampingRatio = if (BuildConfig.CANARY_UI) {
+                Spring.DampingRatioNoBouncy
+            } else {
+                Spring.DampingRatioMediumBouncy
+            },
             stiffness = Spring.StiffnessMedium
         ),
         label = "BottomItemIconScale"
@@ -2715,9 +4549,17 @@ private fun PrimaryActionButton(text: String, icon: ImageVector, onClick: () -> 
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (pressed) AppMotion.PressedScale else 1f,
+        targetValue = if (pressed) {
+            if (BuildConfig.CANARY_UI) AppMotion.CanaryPressedScale else AppMotion.PressedScale
+        } else {
+            1f
+        },
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
+            dampingRatio = if (BuildConfig.CANARY_UI) {
+                Spring.DampingRatioNoBouncy
+            } else {
+                Spring.DampingRatioMediumBouncy
+            },
             stiffness = Spring.StiffnessHigh
         ),
         label = "PrimaryActionPressScale"
@@ -2754,10 +4596,18 @@ private fun InlineMessage(
     }
     AnimatedVisibility(
         visible = message != null,
-        enter = fadeIn(tween(AppMotion.Fast, easing = AppMotion.Easing)) +
-            expandVertically(tween(AppMotion.Fast, easing = AppMotion.Easing)),
-        exit = fadeOut(tween(AppMotion.Micro, easing = AppMotion.Easing)) +
-            shrinkVertically(tween(AppMotion.Fast, easing = AppMotion.Easing)),
+        enter = if (BuildConfig.CANARY_UI) {
+            fadeIn(tween(AppMotion.CanaryFast, easing = AppMotion.Easing))
+        } else {
+            fadeIn(tween(AppMotion.Fast, easing = AppMotion.Easing)) +
+                expandVertically(tween(AppMotion.Fast, easing = AppMotion.Easing))
+        },
+        exit = if (BuildConfig.CANARY_UI) {
+            fadeOut(tween(AppMotion.Micro, easing = AppMotion.Easing))
+        } else {
+            fadeOut(tween(AppMotion.Micro, easing = AppMotion.Easing)) +
+                shrinkVertically(tween(AppMotion.Fast, easing = AppMotion.Easing))
+        },
         modifier = modifier.fillMaxWidth()
     ) {
         if (message != null) {
@@ -2833,4 +4683,3 @@ private fun insertMention(input: TextFieldValue, gameId: String): TextFieldValue
     }
     return TextFieldValue(text, TextRange(cursor))
 }
-

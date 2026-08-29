@@ -1,4 +1,4 @@
-﻿package com.deuterium.app.repository
+package com.deuterium.app.repository
 
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
@@ -41,4 +41,3 @@ fun shouldNotifyFollowedChat(
 
 fun shouldNotifyWalletRecord(walletNotificationsEnabled: Boolean, appForeground: Boolean): Boolean =
     walletNotificationsEnabled && !appForeground
-

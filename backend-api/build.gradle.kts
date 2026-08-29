@@ -1,4 +1,4 @@
-﻿plugins {
+plugins {
     kotlin("jvm") version "1.9.24"
     kotlin("plugin.serialization") version "1.9.24"
     application
@@ -49,6 +49,8 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    maxParallelForks = 1
+    systemProperty("junit.jupiter.execution.parallel.enabled", "false")
 }
 
 tasks.register<Copy>("prepareWindowsRuntime") {
@@ -58,4 +60,3 @@ tasks.register<Copy>("prepareWindowsRuntime") {
     into(outputDir)
     from(layout.buildDirectory.dir("install/deuterium-backend-api"))
 }
-

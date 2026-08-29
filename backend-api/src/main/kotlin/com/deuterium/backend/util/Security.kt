@@ -1,4 +1,4 @@
-﻿package com.deuterium.backend.util
+package com.deuterium.backend.util
 
 import de.mkammerer.argon2.Argon2Factory
 import java.security.MessageDigest
@@ -19,11 +19,15 @@ object Secrets {
 
     fun sixDigitCode(): String = random.nextInt(1_000_000).toString().padStart(6, '0')
 
+    fun sha256Raw(value: String): String =
+        sha256Hex(value.toByteArray(Charsets.UTF_8))
+
     fun sha256(value: String, pepper: String = ""): String {
+        return sha256Raw("$pepper:$value")
+    }
+
+    private fun sha256Hex(bytes: ByteArray): String {
         val digest = MessageDigest.getInstance("SHA-256")
-        val bytes = digest.digest((pepper + ":" + value).toByteArray(Charsets.UTF_8))
-        return bytes.joinToString("") { "%02x".format(it) }
+        return digest.digest(bytes).joinToString("") { "%02x".format(it) }
     }
 }
-
-

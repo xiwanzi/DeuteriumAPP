@@ -1,4 +1,4 @@
-﻿package com.deuterium.app.repository
+package com.deuterium.app.repository
 
 import com.deuterium.app.data.ChatFeedItem
 import org.junit.Assert.assertEquals
@@ -6,6 +6,54 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChatFeedMergerTest {
+    @Test
+    fun appendsNewestLiveMessageWithoutReorderingExistingItems() {
+        val current = listOf(
+            item("msg-1", "2026-04-29T12:00:00Z"),
+            item("msg-2", "2026-04-29T12:01:00Z")
+        )
+
+        val result = appendChatFeedItem(current, item("msg-3", "2026-04-29T12:02:00Z"))
+
+        assertEquals(listOf("msg-1", "msg-2", "msg-3"), result.messages.map { it.id })
+        assertEquals(listOf("msg-3"), result.inserted.map { it.id })
+    }
+
+    @Test
+    fun liveAppendSkipsDuplicateMessageIds() {
+        val current = listOf(item("msg-1", "2026-04-29T12:00:00Z"))
+
+        val result = appendChatFeedItem(current, item("msg-1", "2026-04-29T12:00:00Z"))
+
+        assertEquals(listOf("msg-1"), result.messages.map { it.id })
+        assertTrue(result.inserted.isEmpty())
+    }
+
+    @Test
+    fun liveAppendFallsBackToTimeOrderingForOutOfOrderMessage() {
+        val current = listOf(
+            item("msg-1", "2026-04-29T12:00:00Z"),
+            item("msg-3", "2026-04-29T12:02:00Z")
+        )
+
+        val result = appendChatFeedItem(current, item("msg-2", "2026-04-29T12:01:00Z"))
+
+        assertEquals(listOf("msg-1", "msg-2", "msg-3"), result.messages.map { it.id })
+        assertEquals(listOf("msg-2"), result.inserted.map { it.id })
+    }
+
+    @Test
+    fun liveAppendCapsMessagesToNewestItems() {
+        val current = (1..5).map { index ->
+            item("msg-$index", "2026-04-29T12:0${index}:00Z")
+        }
+
+        val result = appendChatFeedItem(current, item("msg-6", "2026-04-29T12:06:00Z"), maxMessages = 3)
+
+        assertEquals(listOf("msg-4", "msg-5", "msg-6"), result.messages.map { it.id })
+        assertEquals(listOf("msg-6"), result.inserted.map { it.id })
+    }
+
     @Test
     fun insertsNewMessagesAndKeepsTimeOrder() {
         val current = listOf(item("msg-1", "2026-04-29T12:00:00Z"))
@@ -68,4 +116,3 @@ class ChatFeedMergerTest {
             sentAt = sentAt
         )
 }
-

@@ -1,4 +1,4 @@
-﻿# 后端运行时性能实现说明
+# 后端运行时性能实现说明
 
 本文记录 2026-05-01 至 2026-05-03 后端性能增强后的实际技术实现。架构决策见 `docs/adr/0005-backend-runtime-performance.md`，生产交付仍以 `docs/production-delivery.md` 为准。
 

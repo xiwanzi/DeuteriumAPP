@@ -1,4 +1,4 @@
-﻿package com.deuterium.backend.model
+package com.deuterium.backend.model
 
 import kotlinx.serialization.Serializable
 
@@ -32,3 +32,14 @@ data class ChatSendPayload(
     val mentionedPlayerRefs: List<String> = emptyList(),
 )
 
+@Serializable
+data class AiChatStreamRequest(
+    val clientMessageId: String,
+    val content: String,
+)
+
+@Serializable
+data class AiPurchaseRequest(
+    val clientRequestId: String,
+    val planId: String,
+)

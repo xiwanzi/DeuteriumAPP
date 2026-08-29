@@ -1,4 +1,4 @@
-﻿# ADR 0004: 后端与插件技术栈
+# ADR 0004: 后端与插件技术栈
 
 ## Status
 
@@ -135,4 +135,3 @@ SQLite 部署轻量，但后续账号、会话、审计、转账记录和并发�
 - WebSocket 具体消息 schema、重试细节或序列化格式。
 - 生产机器备份、监控、日志轮转和开机自启方案。
 - Linux、Docker Compose、Kubernetes 或多实例部署方案。
-

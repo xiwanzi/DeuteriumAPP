@@ -1,4 +1,4 @@
-﻿# DeuteriumAPP Development Handbook
+# DeuteriumAPP Development Handbook
 
 Last updated: 2026-05-02.
 
@@ -322,4 +322,3 @@ Do not publish or commit:
 - `minecraft-plugin/src/main/local-resources/`
 - any filled `config/application.conf`
 - any APK, ZIP, JAR, keystore, token, password, pepper, or tunnel credential
-

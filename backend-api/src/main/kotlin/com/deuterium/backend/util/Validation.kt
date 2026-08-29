@@ -1,4 +1,4 @@
-﻿package com.deuterium.backend.util
+package com.deuterium.backend.util
 
 import com.deuterium.backend.web.ApiException
 import java.math.BigDecimal
@@ -70,5 +70,4 @@ object Validation {
         return trimmed
     }
 }
-
 

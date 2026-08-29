@@ -1,4 +1,4 @@
-﻿package com.deuterium.app.repository
+package com.deuterium.app.repository
 
 import android.content.ContentValues
 import android.content.Context
@@ -58,6 +58,7 @@ class ChatHistoryStore(context: Context) : SQLiteOpenHelper(
                     SQLiteDatabase.CONFLICT_REPLACE
                 )
             }
+            trimAccountHistory(normalizedAccountId)
         }
     }
 
@@ -129,6 +130,21 @@ class ChatHistoryStore(context: Context) : SQLiteOpenHelper(
         }
     }
 
+    private fun SQLiteDatabase.trimAccountHistory(accountId: String) {
+        delete(
+            TABLE_MESSAGES,
+            """
+            account_id = ? AND rowid NOT IN (
+                SELECT rowid FROM $TABLE_MESSAGES
+                WHERE account_id = ?
+                ORDER BY COALESCE(NULLIF(sent_at, ''), received_at) DESC, received_at DESC
+                LIMIT $MAX_MESSAGES_PER_ACCOUNT
+            )
+            """.trimIndent(),
+            arrayOf(accountId, accountId)
+        )
+    }
+
     private fun String.escapeLike(): String {
         return replace("\\", "\\\\")
             .replace("%", "\\%")
@@ -150,6 +166,7 @@ class ChatHistoryStore(context: Context) : SQLiteOpenHelper(
         const val DATABASE_VERSION = 1
         const val TABLE_MESSAGES = "chat_messages"
         const val DEFAULT_QUERY_LIMIT = 200
+        const val MAX_MESSAGES_PER_ACCOUNT = 5000
         val COLUMNS = arrayOf(
             "message_id",
             "sender",
@@ -162,4 +179,3 @@ class ChatHistoryStore(context: Context) : SQLiteOpenHelper(
         )
     }
 }
-

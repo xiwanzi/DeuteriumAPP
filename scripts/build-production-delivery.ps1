@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$DbHost = "127.0.0.1",
     [string]$DbPort = "3306",
     [string]$DbName = "deuterium_app",
@@ -7,7 +7,13 @@
     [string]$PublicHost = "0.0.0.0",
     [int]$PublicPort = 28657,
     [string]$BridgeHost = "127.0.0.1",
-    [int]$BridgePort = 28658
+    [int]$BridgePort = 28658,
+    [switch]$EnableOidc,
+    [switch]$AllowOidcInsecureHttp,
+    [string]$OidcIssuer,
+    [string]$OidcClientId,
+    [string]$OidcClientSecret,
+    [string]$OidcRedirectUri
 )
 
 $ErrorActionPreference = "Stop"
@@ -58,6 +64,28 @@ function New-OrExistingSecret([string]$Key) {
     return $existing
 }
 
+function Get-ValueOrExistingOrDefault([string]$Key, [string]$Value, [string]$Default) {
+    if (-not [string]::IsNullOrWhiteSpace($Value)) {
+        return $Value
+    }
+    $existing = Get-ExistingConfigValue $Key
+    if (-not [string]::IsNullOrWhiteSpace($existing)) {
+        return $existing
+    }
+    return $Default
+}
+
+function Get-Sha256Hex([string]$Value) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+        $hash = $sha.ComputeHash($bytes)
+        return -join ($hash | ForEach-Object { $_.ToString("x2") })
+    } finally {
+        $sha.Dispose()
+    }
+}
+
 function Copy-DirectoryFresh($Source, $Target) {
     if (Test-Path $Target) {
         Remove-Item -Recurse -Force $Target
@@ -69,6 +97,27 @@ function Copy-DirectoryFresh($Source, $Target) {
 $bridgeToken = New-OrExistingSecret "pluginBridge.token"
 $sessionPepper = New-OrExistingSecret "security.sessionTokenPepper"
 $verificationPepper = New-OrExistingSecret "security.verificationPepper"
+$existingOidcEnabled = Get-ExistingConfigValue "oidc.enabled"
+$oidcEnabled = if ($EnableOidc.IsPresent) { "true" } elseif (-not [string]::IsNullOrWhiteSpace($existingOidcEnabled)) { $existingOidcEnabled } else { "false" }
+$existingOidcAllowInsecureHttp = Get-ExistingConfigValue "oidc.allowInsecureHttp"
+$oidcAllowInsecureHttp = if ($AllowOidcInsecureHttp.IsPresent) { "true" } elseif (-not [string]::IsNullOrWhiteSpace($existingOidcAllowInsecureHttp)) { $existingOidcAllowInsecureHttp } else { "false" }
+$oidcIssuerValue = Get-ValueOrExistingOrDefault "oidc.issuer" $OidcIssuer "https://auth.deuterium.cafe"
+$oidcClientIdValue = Get-ValueOrExistingOrDefault "oidc.clientId" $OidcClientId "wikijs"
+$oidcRedirectUriValue = Get-ValueOrExistingOrDefault "oidc.redirectUri" $OidcRedirectUri "https://wiki.deuterium.cafe/login/oidc/callback"
+$oidcClientSecretHash = if (-not [string]::IsNullOrWhiteSpace($OidcClientSecret)) {
+    Get-Sha256Hex $OidcClientSecret
+} else {
+    Get-ExistingConfigValue "oidc.clientSecretHash"
+}
+if ($oidcEnabled -eq "true" -and [string]::IsNullOrWhiteSpace($oidcClientSecretHash)) {
+    throw "OidcClientSecret is required when enabling OIDC for the first time."
+}
+$existingOidcSigningKeyPath = Join-Path $deliveryRoot "backend\config\oidc-signing-key.json"
+$existingOidcSigningKey = if (Test-Path $existingOidcSigningKeyPath) {
+    Get-Content -Raw -Path $existingOidcSigningKeyPath
+} else {
+    $null
+}
 $section = [char]0x00A7
 $chatBroadcastFormat = "${section}x${section}b${section}1${section}f${section}7${section}f${section}f%player% ${section}7: ${section}f%message%"
 
@@ -77,7 +126,7 @@ New-Item -ItemType Directory -Force $pluginLocalResources | Out-Null
 @"
 backend:
   ws-url: "ws://127.0.0.1:$BridgePort/bridge/plugin/ws"
-  token: "CHANGE_ME"
+  token: "$bridgeToken"
   reconnect-seconds: 5
 
 chat:
@@ -126,15 +175,15 @@ bridge.host=$BridgeHost
 bridge.port=$BridgePort
 
 database.jdbcUrl=$jdbcUrl
-database.user=deuterium_app
-database.password=CHANGE_ME
+database.user=$DbUser
+database.password=$DbPassword
 database.maximumPoolSize=10
 
-security.sessionTokenPepper=CHANGE_ME_TO_LONG_RANDOM_VALUE
-security.verificationPepper=CHANGE_ME_TO_ANOTHER_LONG_RANDOM_VALUE
+security.sessionTokenPepper=$sessionPepper
+security.verificationPepper=$verificationPepper
 security.sessionDays=30
 
-pluginBridge.token=CHANGE_ME_TO_LONG_RANDOM_VALUE
+pluginBridge.token=$bridgeToken
 pluginBridge.requestTimeoutMillis=10000
 pluginBridge.heartbeatIntervalMillis=30000
 pluginBridge.staleAfterMillis=90000
@@ -143,11 +192,27 @@ chat.historyRetentionDays=30
 chat.websocketPingIntervalMillis=15000
 chat.websocketTimeoutMillis=35000
 
+oidc.enabled=$oidcEnabled
+oidc.issuer=$oidcIssuerValue
+oidc.clientId=$oidcClientIdValue
+oidc.clientSecretHash=$oidcClientSecretHash
+oidc.redirectUri=$oidcRedirectUriValue
+oidc.signingKeyPath=config/oidc-signing-key.json
+oidc.allowInsecureHttp=$oidcAllowInsecureHttp
+oidc.authorizationCodeMinutes=5
+oidc.accessTokenMinutes=10
+oidc.idTokenMinutes=10
+oidc.webSessionHours=12
+
 app.latestVersionCode=5
 app.latestVersionName=1.0.3
 
 log.level=INFO
 "@ | Set-Content -Encoding UTF8 (Join-Path $backendRuntimeTarget "config\application.conf")
+
+if (-not [string]::IsNullOrWhiteSpace($existingOidcSigningKey)) {
+    Set-Content -Encoding UTF8 -Path (Join-Path $backendRuntimeTarget "config\oidc-signing-key.json") -Value $existingOidcSigningKey
+}
 
 $jlink = (Get-Command jlink -ErrorAction SilentlyContinue)
 if ($jlink) {
@@ -198,14 +263,27 @@ Expose only port $PublicPort through HTTPS intranet tunnel.
 Base URL:
 
 ```text
-https://example.com/api/v1
+https://deuterium.s.odn.cc/api/v1
 ```
 
 Chat WebSocket:
 
 ```text
-wss://example.com/api/v1/chat/ws
+wss://deuterium.s.odn.cc/api/v1/chat/ws
 ```
+
+OIDC for Wiki.js:
+
+```text
+Enabled: $oidcEnabled
+Issuer: $oidcIssuerValue
+Client ID: $oidcClientIdValue
+Redirect URI: $oidcRedirectUriValue
+Allow insecure HTTP: $oidcAllowInsecureHttp
+```
+
+If OIDC is enabled with HTTP, keep it restricted to the intended internal environment.
+Preserve `backend/config/oidc-signing-key.json` across package replacements.
 
 ## Minecraft Plugin
 
@@ -214,4 +292,3 @@ The jar includes default same-machine bridge settings for `127.0.0.1:$BridgePort
 "@ | Set-Content -Encoding UTF8 (Join-Path $deliveryRoot "README.md")
 
 Write-Host "Production delivery generated at: $deliveryRoot"
-

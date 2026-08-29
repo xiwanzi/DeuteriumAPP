@@ -1,9 +1,10 @@
-﻿package com.deuterium.backend
+package com.deuterium.backend
 
 import com.deuterium.backend.config.AppConfig
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class AppConfigTest {
     @Test
@@ -52,5 +53,42 @@ class AppConfigTest {
         assertEquals(20_000, config.chat.websocketPingIntervalMillis)
         assertEquals(45_000, config.chat.websocketTimeoutMillis)
     }
-}
 
+    @Test
+    fun `oidc rejects non-local http issuer unless explicitly allowed`() {
+        val file = Files.createTempFile("deuterium-app-config", ".conf")
+        Files.writeString(file, oidcConfig(allowInsecureHttp = false))
+
+        assertFailsWith<IllegalArgumentException> {
+            AppConfig.load(file.toString())
+        }
+    }
+
+    @Test
+    fun `oidc allows non-local http issuer when explicitly configured for internal environment`() {
+        val file = Files.createTempFile("deuterium-app-config", ".conf")
+        Files.writeString(file, oidcConfig(allowInsecureHttp = true))
+
+        val config = AppConfig.load(file.toString())
+
+        assertEquals("http://106.52.237.179", config.oidc.issuer)
+        assertEquals("http://wiki.internal/login/oidc/callback", config.oidc.redirectUri)
+        assertEquals(true, config.oidc.allowInsecureHttp)
+    }
+
+    private fun oidcConfig(allowInsecureHttp: Boolean): String =
+        """
+        database.jdbcUrl=jdbc:h2:mem:test
+        database.user=test
+        database.password=test
+        security.sessionTokenPepper=session-pepper
+        security.verificationPepper=verification-pepper
+        pluginBridge.token=bridge-token
+        oidc.enabled=true
+        oidc.issuer=http://106.52.237.179
+        oidc.clientId=wikijs
+        oidc.clientSecretHash=${"a".repeat(64)}
+        oidc.redirectUri=http://wiki.internal/login/oidc/callback
+        oidc.allowInsecureHttp=$allowInsecureHttp
+        """.trimIndent()
+}

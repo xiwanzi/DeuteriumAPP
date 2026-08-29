@@ -1,4 +1,4 @@
-﻿# CONTEXT.md
+# CONTEXT.md
 
 ## 1. 文档定位
 
@@ -77,6 +77,7 @@ DeuteriumAPP 的第一阶段重点不是做一个通用 Minecraft 社区平台�
 - 服务器公告、维护通知或活动提醒。
 - 玩家资料页和基础服务器信息展示。
 - 与服务器插件形成更稳定的双向通信协议。
+- 与 Wiki.js 等服务器配套系统复用 Deuterium 账号身份，但不把 App 扩展成通用 OAuth 平台。
 
 这些长期方向只是上下文倾向，不代表已经进入第一阶段范围。
 
@@ -93,6 +94,8 @@ ADR 0001 已接受 Android UI 层采用 Kotlin + Jetpack Compose + Material 3。
 App 账号必须围绕 Minecraft 玩家身份建立。玩家在服务器中的 ID 和身份绑定关系，是 App 账号可信度的核心来源。
 
 第一阶段不默认引入短信、邮箱、OAuth 或复杂第三方账号体系。
+
+这里的限制指 App 不默认接受第三方账号作为登录来源。后端作为 Deuterium 账号的受控 OIDC Provider，给 Wiki.js 等服务器配套系统输出身份，是独立集成边界，不改变 App 的账号注册、登录和会话机制。
 
 ### 6.3 钱包安全优先
 
@@ -188,6 +191,8 @@ App 在线状态用于玩家目录展示当前账号在 App 侧的活跃程度�
 
 后端 API 指 Android App 直接调用的独立服务。它负责鉴权、业务校验、请求编排、安全控制和与插件桥通信。
 
+同一个后端也可以承担受控的服务器配套系统接入，例如 Wiki.js OIDC Provider。此类接入必须有独立契约和安全边界，不得让 OIDC token 访问 Android `/api/v1/*`，也不得开放 Minecraft 插件桥。
+
 ### 7.14 插件桥
 
 插件桥指后端与 Minecraft 服务器之间的通信层。它可以由 Minecraft 插件、服务器命令接口或其他受控机制实现，但不得把数据库凭据或服务器敏感能力暴露给 App。
@@ -203,6 +208,12 @@ App 在线状态用于玩家目录展示当前账号在 App 侧的活跃程度�
 ### 7.17 App 版本检查
 
 App 版本检查指“我的”页中的轻量更新状态查询。Android 向后端提交当前 `versionCode/versionName`，后端只用配置中的最新版本号判断是否已是最新，不查询数据库，不做 APK 下载、强制更新、跳转链接或灰度发布。
+
+### 7.18 Wiki.js OIDC 登录
+
+Wiki.js OIDC 登录指 Wiki.js 作为外部 relying party，通过 Deuterium 后端提供的最小 OIDC Provider 让玩家使用既有 Deuterium APP 账号密码登录 Wiki.js。
+
+该能力暴露 `/.well-known/*` 和 `/oauth/*`，使用独立 OIDC browser session、authorization code 和 access token，不复用 Android APP opaque Bearer session。Wiki.js 权限由 Wiki.js 自身的 `autoEnrollGroups` 和权限组控制。
 
 ## 8. 模块边界与命名
 
@@ -251,6 +262,7 @@ App 版本检查指“我的”页中的轻量更新状态查询。Android 向�
 - App 不直连数据库。
 - App 不直接持有数据库凭据。
 - App 不直接修改服务器经济数据。
+- Wiki.js OIDC 接入只能通过后端公开端口的 `/.well-known/*` 和 `/oauth/*`，不得使用 Android `/api/v1/*` session，也不得接触插件桥端口。
 - 技术栈选择必须进入 ADR 后再锁定；Android UI 技术栈已由 ADR 0001 锁定为 Kotlin + Jetpack Compose + Material 3。
 
 ### 9.4 协作约束
@@ -269,7 +281,7 @@ App 版本检查指“我的”页中的轻量更新状态查询。Android 向�
 - 不做 Web App、iOS App、桌面 App 或小程序。
 - 不做复杂运营后台。
 - 不做大型社交网络能力，例如好友推荐、广场、内容流。
-- 不默认支持第三方 OAuth、短信验证码或邮箱找回。
+- 不默认支持第三方 OAuth 作为 App 登录入口、短信验证码或邮箱找回；Wiki.js OIDC 属于 Deuterium 账号对服务器配套系统输出身份，不属于第三方账号登录。
 - 不默认实现复杂频道、撤回、私聊、群聊或消息审核后台。
 - 不把关心玩家扩展成完整好友系统、私聊系统或社交关系图。
 - 不直接让 App 连接数据库。
@@ -326,4 +338,3 @@ App 版本检查指“我的”页中的轻量更新状态查询。Android 向�
 5. `docs/prd/chat.md`：App 与服务器聊天互通。
 
 如果用户希望继续“一份一份来”，下一份优先建议写 `docs/prd/account.md`，因为账号体系会影响钱包、转账和聊天的所有身份边界。
-
