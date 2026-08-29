@@ -68,7 +68,7 @@ GitHub `main` 已包含 Android `1.0.5 (7)` 源码。它是公开源码基线，
 
 ## 版本与部署一致性
 
-### 已确认一致的接口
+### 源码层面已确认一致的接口
 
 - App 的 HTTP API 与聊天 WebSocket 都以 `/api/v1` 为前缀；后端提供相同路由。
 - App 的生产构建使用 `https://deuterium.s.odn.cc/api/v1` 和 `wss://deuterium.s.odn.cc/api/v1/chat/ws`；调试构建使用同域名的 HTTP/WS 地址，仅适合受控调试环境。
@@ -91,6 +91,8 @@ GitHub `main` 已包含 Android `1.0.5 (7)` 源码。它是公开源码基线，
 3. 插件发行包内必须保留 `backend.token: CHANGE_ME` 这类占位配置；仅在 Minecraft 服务器生成的私有 `plugins/DeuteriumBridge/config.yml` 中填写与后端一致的 token。不要把真实 token 打进 JAR、示例配置或公开仓库。
 
 4. GitHub 源码仓库不包含生产数据库、真实配置、签名材料或已验证的 APK/JAR 发布物。每次发布都应执行 App、后端和插件的集成检查，而不是只更新其中一个模块。
+
+5. 生产域名必须在发布前通过实际连通性检查。最近一次检查中，HTTPS 入口未能建立 TLS，HTTP 入口对 `/health/live`、`/health/ready` 和 `/api/v1/app/update-check` 返回 `404`；在这三个公开检查恢复为预期响应前，不能把当前线上 App、后端和插件标记为端到端可用。
 
 当前公开源码已经覆盖账号、钱包、转账、聊天和插件桥主流程。Android release signing、正式分发策略，以及 AI 购买的插件扣款桥接仍需在发布前完成端到端验收。
 
