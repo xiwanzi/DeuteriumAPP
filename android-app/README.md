@@ -9,10 +9,10 @@ AI 代理需要构建 APK 时请阅读：[Android 前端 AI 构建指南](docs/a
 
 ## 当前版本
 
-- `versionCode`: `6`
-- `versionName`: `1.0.4`
+- `versionCode`: `7`
+- `versionName`: `1.0.5`
 - Debug APK：`app/build/outputs/apk/debug/app-debug.apk`
-- 本版本包含聊天页前台持续收取改进：WebSocket 实时接收、前台 15 秒静默补齐、回前台立即补齐，以及“X 条新消息”提示。
+- 本版本保留聊天页前台持续收取改进（WebSocket 实时接收、前台 15 秒静默补齐、回前台立即补齐和“X 条新消息”提示），并包含 Android 客户端兼容性与性能优化。
 
 ## 技术栈
 
